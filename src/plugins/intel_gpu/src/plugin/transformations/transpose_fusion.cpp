@@ -12,6 +12,7 @@
 #include "openvino/pass/pattern/op/label.hpp"
 #include "openvino/pass/pattern/op/pattern.hpp"
 #include "transpose_fusion.hpp"
+#include <memory>
 #include "openvino/op/matmul.hpp"
 #include "openvino/op/scaled_dot_product_attention.hpp"
 #include "openvino/op/convert.hpp"
@@ -21,6 +22,9 @@
 #include "openvino/pass/pattern/op/or.hpp"
 #include "openvino/pass/pattern/op/any.hpp"
 #include "transformations/utils/utils.hpp"
+#include "openvino/opsets/opset1.hpp"
+#include "openvino/opsets/opset3.hpp"
+#include "openvino/opsets/opset8.hpp"
 
 using namespace ov::pass::pattern;
 using ov::pass::pattern::op::Or;
@@ -69,7 +73,45 @@ bool has_optimized_version(const ov::Output<ov::Node>& output, bool supports_imm
 TransposeFusion::TransposeFusion(bool supports_immad) {
     add_matcher<TransposeMatMulTransposeMatcher>(supports_immad);
     add_matcher<TransposeMatMulMatcher>(supports_immad);
+    add_matcher<AttnMaskSDPAFusionMatcher>();
     add_matcher<TransposeSDPAMatcher>();
+}
+
+AttnMaskSDPAFusionMatcher::AttnMaskSDPAFusionMatcher() {
+    auto attn_mask = std::make_shared<ov::opset1::Parameter>(ov::element::i64, ov::PartialShape{ -1, -1});
+    auto convert = wrap_type<ov::opset1::Convert>({attn_mask});
+    auto shapeof = std::make_shared<ov::opset3::ShapeOf>(convert);
+    auto gather = std::make_shared<ov::opset8::Gather>(shapeof, any_input(), any_input());
+            // ov::opset1::Constant::create(ov::element::i32, {}, { 1 }),
+            // ov::opset1::Constant::create(ov::element::i32, {1}, { 0 }));
+    auto concat = std::make_shared<ov::opset1::Concat>(ov::OutputVector{any_input(), any_input(), any_input(), gather}, 0);
+    auto broadcast = wrap_type<ov::opset3::Broadcast>({any_input(), concat});
+    auto convert1 = wrap_type<ov::opset1::Convert>({broadcast});
+    auto mul = std::make_shared<ov::opset1::Multiply>(convert1, any_input());
+    auto add = std::make_shared<ov::opset1::Add>(mul, any_input());
+    // auto convert2 = wrap_type<ov::opset1::Convert>({add});
+    auto select = wrap_type<ov::opset1::Select>({any_input(), any_input(), add});
+    auto convert2 = wrap_type<ov::opset1::Convert>({select});
+    auto select1 = wrap_type<ov::opset1::Select>({convert2, any_input(), any_input()});
+    ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](Matcher& m) {
+        std::cout << "wzx debug to_replace" << std::endl;
+        const auto& pattern_map = m.get_pattern_value_map();
+        auto to_replace = std::dynamic_pointer_cast<ov::opset1::Select>(m.get_match_root());
+        // auto sdpa = std::dynamic_pointer_cast<ov::op::v13::ScaledDotProductAttention>(m.get_match_root());
+        if (!to_replace || transformation_callback(to_replace)) {
+            std::cout << "wzx debug failt to hit pattern" << std::endl;
+            return false;
+        }
+        auto replace_node = std::dynamic_pointer_cast<ov::opset1::Parameter>(pattern_map.at(attn_mask).get_node_shared_ptr());
+        std::cout << "wzx debug hit pattern" << std::endl;
+        // replace_node.set_friendly_name(to_replace->get_friendly_name());
+        // ov::copy_runtime_info(m.get_match_nodes(), replace_node);
+        ov::replace_node(to_replace, replace_node);
+        std::cout << "wzx debug replace success" << std::endl;
+        return true;
+    };
+    auto m = std::make_shared<ov::pass::pattern::Matcher>(select1, "AttnMaskSPDAFusionMatcher");
+    this->register_matcher(m, callback);
 }
 
 TransposeSDPAMatcher::TransposeSDPAMatcher() {

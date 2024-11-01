@@ -309,38 +309,57 @@ ParamsKey SDPAKernelMicro::GetSupportedKey() const {
 }
 
 bool SDPAKernelMicro::Validate(const Params& p) const {
-    if (!Parent::Validate(p))
+    std::cout << "wzx debug SDPAKernelMico hit" << std::endl;
+    if (!Parent::Validate(p)) {
+        std::cout << "wzx debug SDPAKernelMico 1" << std::endl;
         return false;
+    }
 
     const sdpa_params& params = static_cast<const sdpa_params&>(p);
 
-    if (params.conf.is_paged_attention)
+    if (params.conf.is_paged_attention) {
+        std::cout << "wzx debug SDPAKernelMico 2" << std::endl;
         return false;
+    }
 
-    if (params.engineInfo.arch < gpu_arch::xe_hpg || !params.engineInfo.supports_microkernels)
+    if (params.conf.is_causal) {
+        std::cout << "wzx debug SDPAKernelMico 4" << std::endl;
         return false;
+    }
 
-    if (params.conf.is_causal)
+    if (params.engineInfo.arch < gpu_arch::xe_hpg || !params.engineInfo.supports_microkernels) {
+        std::cout << "wzx debug SDPAKernelMico 3" << std::endl;
         return false;
+    }
 
-    if (params.indirect_axis != -1)
+    if (params.indirect_axis != -1) {
+        std::cout << "wzx debug SDPAKernelMico 5" << std::endl;
         return false;
+    }
 
     auto Q_num_heads_dim = get_num_heads(params.inputs[0], params.input0_order);
     auto K_num_heads_dim = get_num_heads(params.inputs[1], params.input1_order);
     auto V_num_heads_dim = get_num_heads(params.inputs[2], params.input2_order);
 
-    if (params.input0_order != params.input1_order || params.input0_order != params.input2_order)
+    if (params.input0_order != params.input1_order || params.input0_order != params.input2_order) {
+        std::cout << "wzx debug SDPAKernelMico 6" << std::endl;
         return false;
+    }
 
-    if (params.input0_order[3] != 3)
+    if (params.input0_order[3] != 3) {
+        std::cout << "wzx debug SDPAKernelMico 7" << std::endl;
         return false;
+    }
 
-    if (Q_num_heads_dim.is_dynamic || K_num_heads_dim.is_dynamic || V_num_heads_dim.is_dynamic || K_num_heads_dim.v != V_num_heads_dim.v)
+    if (Q_num_heads_dim.is_dynamic || K_num_heads_dim.is_dynamic || V_num_heads_dim.is_dynamic || K_num_heads_dim.v != V_num_heads_dim.v) {
+        std::cout << "wzx debug SDPAKernelMico 8" << std::endl;
         return false;
+    }
 
-    if (params.conf.head_size > 256)
+    if (params.conf.head_size > 256) {
+        std::cout << "wzx debug SDPAKernelMico 9" << std::endl;
         return false;
+    }
 
     return true;
 }
