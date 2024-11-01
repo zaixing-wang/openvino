@@ -33,5 +33,11 @@ public:
     TransposeSDPAMatcher();
 };
 
+class AttnMaskSDPAFusionMatcher : public ov::pass::MatcherPass {
+public:
+    OPENVINO_RTTI("AttnMaskSDPAFusionMatcher", "0");
+    AttnMaskSDPAFusionMatcher();
+};
+
 }   // namespace intel_gpu
 }   // namespace ov

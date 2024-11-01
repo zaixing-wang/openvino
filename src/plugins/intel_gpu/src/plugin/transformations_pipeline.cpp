@@ -210,6 +210,7 @@ namespace ov {
 namespace intel_gpu {
 
 void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
+    std::cout << "wzx debug TransformationsPipeline::apply" << std::endl;
     OV_ITT_SCOPED_TASK(itt::domains::intel_gpu_plugin, "TransformationsPipeline::apply");
     using const_node_ptr = const std::shared_ptr<const ov::Node>;
 
@@ -901,6 +902,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         }
 
         manager.run_passes(func);
+        std::cout << "wzx debug end TransformationsPipeline::apply" << std::endl;
     }
 }
 }  // namespace intel_gpu

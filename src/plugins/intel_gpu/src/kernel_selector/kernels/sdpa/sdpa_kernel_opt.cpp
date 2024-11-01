@@ -154,6 +154,7 @@ bool SDPAKernelOpt::Validate(const Params& p) const {
     if (params.conf.head_size < 1 || params.conf.head_size % subgroup_size != 0)
         return false;
 
+    std::cout << "wzx debug SDPAKernelOpt::Validate true" << std::endl;
     return true;
 }
 
@@ -254,8 +255,10 @@ CommonDispatchData SDPAKernelOpt::SetDefault(const sdpa_params& params, size_t k
 
 KernelsData SDPAKernelOpt::GetKernelsData(const Params& params) const {
     if (!Validate(params)) {
+        std::cout << "wzx debug SDPAKernelOpt::GetKernelsData 1" << std::endl;
         return {};
     }
+    std::cout << "wzx debug SDPAKernelOpt::GetKernelsData 1.1" << std::endl;
 
     std::vector<KernelsTypes> kernels_type;
     const auto& prim_params = static_cast<const sdpa_params&>(params);
@@ -293,6 +296,7 @@ KernelsData SDPAKernelOpt::GetKernelsData(const Params& params) const {
         auto inputs_num =
             kernel_idx == KernelsTypes::FINALIZATION ? 0 : static_cast<int>(prim_params.inputs.size());
 
+        std::cout << "wzx debug SDPAKernelOpt::GetKernelsData 2" << std::endl;
         FillCLKernelData(kernel,
                          dispatch_data,
                          params.engineInfo,
