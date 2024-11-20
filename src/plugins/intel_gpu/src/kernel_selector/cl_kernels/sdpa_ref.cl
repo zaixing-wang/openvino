@@ -113,6 +113,12 @@ inline uint FUNC(get_bt_index_value)(OPTIONAL_SHAPE_INFO_ARG uint b, uint f, uin
 
 #define APPLY_SCALE_TO_QUERY 1
 
+// query_input   [batch, heads_num, q_len, head_size]
+// key_input     [batch, kv_heads_num, kv_len, head_size]
+// value_input   [batch, kv_heads_num, kv_len, head_size]
+// attn_mask     [1, 1, q_len, kv_len]
+// output        [batch, heads_num, q_len, head_size]
+// tmp_buf       [batch, heads_num, q_len, kv_len]
 KERNEL(sdpa_ref)(
     OPTIONAL_SHAPE_INFO_ARG
     const __global INPUT0_TYPE* query_input,
@@ -131,21 +137,38 @@ KERNEL(sdpa_ref)(
     __global OUTPUT_TYPE* tmp_buf
 )
 {
+    // dispatchData.gws = { output.Batch().v * output.Feature().v, output.Y().v, output.X().v };
+                        // = b * f, y, x
+
+    // batch * head_num
     const uint batch_idx = get_global_id(0);
+
+    // TransposedDimensionAccessHelperJit dims_q(params.inputs[0], params.input0_order);
+    // const auto num_heads = params.conf.is_paged_attention ? std::to_string(params.conf.heads_num) : dims_q.f();
+    // jit.AddConstant(MakeJitConstant("NUM_HEADS", num_heads));
     const uint b0 = batch_idx / NUM_HEADS; /* BATCH dim */
     const uint b1 = batch_idx % NUM_HEADS; /* HEADS_NUM dim */
+
+    // jit.AddConstant(MakeJitConstant("TARGET_SEQ_LEN", dims_q.y()));
+    // jit.AddConstant(MakeJitConstant("NUM_HEADS", num_heads));
+    // jit.AddConstant(MakeJitConstant("NUM_KV_HEADS", params.conf.kv_heads_num));
+
+    // q_y
     const uint target_seq_idx = get_global_id(1);
+    // q_x
     const uint head_size_idx = get_global_id(2);
 
 #if HAS_SCALE_INPUT
     const OUTPUT_TYPE scale_val = *scale;
 #else
+    // INPUT1_SIZE_X = head_size
     const OUTPUT_TYPE scale_val = OUTPUT_VAL_ONE / sqrt(TO_OUTPUT_TYPE(INPUT1_SIZE_X));
 #endif
 
     // Process 1*seq_len elements (Gemm1 + SoftMax) using a single work item, saving results to tmp_buf and
     // reusing them between all work items within a single workgroup for Gemm2 calculations.
     if (get_local_id(2) == 0) {
+        // jit.AddConstant(MakeJitConstant("SOURCE_SEQ_LEN", dims_k.y()));   kv_len
         for (uint s = 0; s < SOURCE_SEQ_LEN /* seq_len */; s++) {
             OUTPUT_TYPE acc = 0;
             for (uint h = 0; h < HEAD_SIZE /* head_size */; h++) {
@@ -184,6 +207,9 @@ KERNEL(sdpa_ref)(
 #if IS_CAUSAL
             OUTPUT_TYPE attn_mask_val = s > target_seq_idx ? OUTPUT_VAL_MIN : 0;
 #elif !IS_CAUSAL && HAS_ATTN_MASK_INPUT
+// #define INPUT3_GET_INDEX_SAFE(b, f, y, x) GET_DATA_INDEX_SAFE(INPUT3, b, f, y, x)
+// #define GET_DATA_INDEX_SAFE(prefix, b, f, y, x) CAT(prefix, _OFFSET) + (x % CAT(prefix, _SIZE_X ))*CAT(prefix, _X_PITCH) + (y % CAT(prefix, _SIZE_Y ))*CAT(prefix, _Y_PITCH) + (f % CAT(prefix, _FEATURE_NUM))*CAT(prefix, _FEATURE_PITCH) + (b % CAT(prefix, _BATCH_NUM ))*CAT(prefix, _BATCH_PITCH)
+// const uint attn_mask_offset = (start_partition_idx + seq_len % 1)*1 + (target_seq_idx + seq_idx % 1)*1 + (b1_idx % INPUT3_FEATURE_NUM) + (b0_idx % INPUT3_BATCH_NUM ))* INPUT3_FEATURE_NUM;
             uint attn_mask_offset = INPUT3_GET_INDEX_SAFE(b0, b1, target_seq_idx, s);
             OUTPUT_TYPE attn_mask_val = attn_mask[attn_mask_offset];
 #else
