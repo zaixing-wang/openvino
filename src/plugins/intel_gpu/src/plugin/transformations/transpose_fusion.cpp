@@ -102,7 +102,11 @@ AttnMaskSDPAFusionMatcher::AttnMaskSDPAFusionMatcher() {
             std::cout << "wzx debug failt to hit pattern" << std::endl;
             return false;
         }
-        auto replace_node = std::dynamic_pointer_cast<ov::opset1::Parameter>(pattern_map.at(attn_mask).get_node_shared_ptr());
+        // auto replace_node = std::dynamic_pointer_cast<ov::opset1::Parameter>(pattern_map.at(attn_mask).get_node_shared_ptr());
+
+        auto attn_node = std::dynamic_pointer_cast<ov::opset1::Parameter>(pattern_map.at(attn_mask).get_node_shared_ptr());
+        auto replace_node = std::make_shared<ov::opset1::Convert>(attn_node, ov::element::f16);
+        // auto replace_node = std::dynamic_pointer_cast<ov::opset1::Convert>(pattern_map.at(convert).get_node_shared_ptr());
         std::cout << "wzx debug hit pattern" << std::endl;
         // replace_node.set_friendly_name(to_replace->get_friendly_name());
         // ov::copy_runtime_info(m.get_match_nodes(), replace_node);
