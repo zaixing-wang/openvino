@@ -88,6 +88,7 @@
 #include "plugin/transformations/print_model_statistics.hpp"
 #include "plugin/transformations/sink_reshape.hpp"
 #include "plugin/transformations/transpose_fusion.hpp"
+#include "plugin/transformations/multi_scale_deformable_attn_fusion.hpp"
 #include "plugin/transformations/unsqueeze_broadcast_reshape_matmul_fusion.hpp"
 #include "plugin/transformations/unsqueeze_broadcast_reshape_sdpa_fusion.hpp"
 #include "transformations/common_optimizations/activations_scaling.hpp"
@@ -1286,6 +1287,8 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         GPU_DEBUG_IF(config.get_verbose() >= 1) {
             manager.register_pass<ov::intel_gpu::PrintModelStatistics>();
         }
+        std::cout << "wzx debug hit" << std::endl;
+        manager.register_pass<ov::intel_gpu::MultiScaleDeformableAttnFusion>();
         manager.run_passes(func);
     }
 }
