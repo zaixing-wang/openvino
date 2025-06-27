@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "json_object.h"
 #include "msda_inst.h"
 #include "primitive_type_base.h"
-#include "json_object.h"
 
 namespace cldnn {
 GPU_DEFINE_PRIMITIVE_TYPE_ID(msda);
 
 namespace {
 // Overload << operator for vectors
-template<typename T>
+template <typename T>
 std::ostream& operator<<(std::ostream& os, const std::vector<T>& vec) {
     os << "[";
     for (size_t i = 0; i < vec.size(); ++i) {
@@ -23,7 +23,7 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vec) {
     os << "]";
     return os;
 }
-};
+};  // namespace
 
 std::string msda_inst::to_string(const msda_node& node) {
     auto desc = node.get_primitive();
@@ -63,7 +63,7 @@ std::vector<int32_t> msda_inst::get_mask_seqlens_from_memory() const {
 
     GPU_DEBUG_TRACE_DETAIL << " get_mask_seqlens_from_memory " << cu_seqlens_mem->buffer_ptr() << " : " << buf << std::endl;
 
-    return buf;   
+    return buf;
 }
 
 std::vector<int32_t> msda_inst::get_mask_seqlens_from_memory2(memory::ptr cu_seqlens_mem, stream& stream) {
@@ -75,7 +75,7 @@ std::vector<int32_t> msda_inst::get_mask_seqlens_from_memory2(memory::ptr cu_seq
 
     GPU_DEBUG_TRACE_DETAIL << " get_mask_seqlens_from_memory2 " << cu_seqlens_mem->buffer_ptr() << " : " << buf << std::endl;
 
-    return buf;   
+    return buf;
 }
 
 }  // namespace cldnn
