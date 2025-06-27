@@ -1287,7 +1287,6 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         GPU_DEBUG_IF(config.get_verbose() >= 1) {
             manager.register_pass<ov::intel_gpu::PrintModelStatistics>();
         }
-        std::cout << "wzx debug hit" << std::endl;
         manager.register_pass<ov::intel_gpu::MultiScaleDeformableAttnFusion>();
         manager.run_passes(func);
     }

@@ -9,7 +9,6 @@
 #include <compress_quantize_weights.hpp>
 #include <openvino/pass/make_stateful.hpp>
 #include <openvino/pass/sdpa_to_paged_attention.hpp>
-#include <openivno/pass/multi_scale_deformable_attn.hpp>
 #include <openvino/pass/serialize.hpp>
 #include <openvino/pass/stateful_to_stateless.hpp>
 #include <pruning.hpp>
@@ -172,14 +171,4 @@ void regmodule_offline_transformations(py::module m) {
             manager.run_passes(model);
         },
         py::arg("model"));
-
-    m_offline_transformations.def(
-        "multi_scale_deformable_attn_transformation",
-        [](py::object& ie_api_model) {
-            const auto model = Common::utils::convert_to_model(ie_api_model);
-            ov::pass::Manager manager;
-            manager.register_pass<ov::pass::MultiScaleDeformableAttn>();
-            manager.run_passes(model);
-        },
-        py::arg("model")); 
 }
