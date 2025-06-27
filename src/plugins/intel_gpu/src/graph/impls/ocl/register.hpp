@@ -63,6 +63,7 @@
 #include "intel_gpu/primitives/eye.hpp"
 #include "intel_gpu/primitives/unique.hpp"
 #include "intel_gpu/primitives/paged_attention.hpp"
+#include "intel_gpu/primitives/msda.hpp"
 #include "intel_gpu/primitives/kv_cache.hpp"
 #include "intel_gpu/primitives/scaled_dot_product_attention.hpp"
 
@@ -156,6 +157,7 @@ REGISTER_OCL(scaled_dot_product_attention);
 REGISTER_OCL(search_sorted);
 REGISTER_OCL(STFT);
 REGISTER_OCL(ISTFT);
+REGISTER_OCL(msda);
 
 #undef REGISTER_OCL
 

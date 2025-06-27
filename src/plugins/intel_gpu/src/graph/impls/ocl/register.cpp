@@ -85,6 +85,7 @@ void register_implementations() {
     REGISTER_OCL(search_sorted);
     REGISTER_OCL(STFT);
     REGISTER_OCL(ISTFT);
+    REGISTER_OCL(msda);
 }
 
 }  // namespace ocl
