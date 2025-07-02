@@ -18,11 +18,7 @@ static void CreateMSDAOp(ProgramBuilder& p, const std::shared_ptr<op::internal::
     auto inputs = p.GetInputInfo(op);
 
     const std::string layerName = layer_type_name_ID(op);
-    const cldnn::msda msda_prim(layerName, inputs,
-                                    op->get_input0_transpose_order(),
-                                    op->get_input1_transpose_order(),
-                                    op->get_input2_transpose_order(),
-                                    op->get_output_transpose_order());
+    const cldnn::msda msda_prim(layerName, inputs);
 
     p.add_primitive(*op, msda_prim);
 }

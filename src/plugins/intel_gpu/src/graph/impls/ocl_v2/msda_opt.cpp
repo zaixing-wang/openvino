@@ -4,13 +4,12 @@
 
 #include "msda_opt.hpp"
 
-#include "msda_inst.h"
 #include "common_utils/dispatch_utils.hpp"
 #include "intel_gpu/graph/kernel_impl_params.hpp"
+#include "intel_gpu/primitives/msda.hpp"
+#include "msda_inst.h"
 #include "primitive_ocl_base.hpp"
 #include "utils/kernel_generator.hpp"
-#include "intel_gpu/primitives/msda.hpp"
-
 
 namespace ov::intel_gpu::ocl {
 namespace {
@@ -39,10 +38,13 @@ protected:
             const auto& desc = params.typed_desc<msda>();
 
             auto& wgs = kd.params.workGroups;
-
+            const auto batch_size = params.get_input_layout(0).get_shape()[0];
+            const auto num_levels = params.get_input_layout(1).get_shape()[0];
+            const auto num_heads = params.get_input_layout(0).get_shape()[2];
+            const auto embed_dims = params.get_input_layout(0).get_shape()[3];
             // to update
-            wgs.global = {1, 1, 1};
-            wgs.local = {1, 1, 1};
+            wgs.global = {1, 1, batch_size * num_levels * num_heads * embed_dims};
+            wgs.local = {1, 1, 64};
         }};
     }
 };

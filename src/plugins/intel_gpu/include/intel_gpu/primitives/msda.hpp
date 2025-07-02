@@ -25,30 +25,12 @@ struct msda : public primitive_base<msda> {
     /// @param id                 An identifier of new primitive.
     /// @param inputs             A list of Input primitive ids (inputs).
     msda(const primitive_id& id,
-            const std::vector<input_info>& inputs,
-            const std::vector<int64_t>& input_q_transpose_order = {},
-            const std::vector<int64_t>& input_k_transpose_order = {},
-            const std::vector<int64_t>& input_v_transpose_order = {},
-            const std::vector<int64_t>& output_transpose_order = {})
-        : primitive_base(id, inputs)
-        , input_q_transpose_order(input_q_transpose_order)
-        , input_k_transpose_order(input_k_transpose_order)
-        , input_v_transpose_order(input_v_transpose_order)
-        , output_transpose_order(output_transpose_order) {
+            const std::vector<input_info>& inputs)
+        : primitive_base(id, inputs) {
     }
-
-    std::vector<int64_t> input_q_transpose_order;
-    std::vector<int64_t> input_k_transpose_order;
-    std::vector<int64_t> input_v_transpose_order;
-    std::vector<int64_t> output_transpose_order;
 
     size_t hash() const override {
         size_t seed = primitive::hash();
-        seed = hash_range(seed, input_q_transpose_order.begin(), input_q_transpose_order.end());
-        seed = hash_range(seed, input_k_transpose_order.begin(), input_k_transpose_order.end());
-        seed = hash_range(seed, input_v_transpose_order.begin(), input_v_transpose_order.end());
-        seed = hash_range(seed, output_transpose_order.begin(), output_transpose_order.end());
-
         return seed;
     }
 
@@ -58,18 +40,10 @@ struct msda : public primitive_base<msda> {
 
     void save(BinaryOutputBuffer& ob) const override {
         primitive_base<msda>::save(ob);
-        ob << input_q_transpose_order;
-        ob << input_k_transpose_order;
-        ob << input_v_transpose_order;
-        ob << output_transpose_order;
     }
 
     void load(BinaryInputBuffer& ib) override {
         primitive_base<msda>::load(ib);
-        ib >> input_q_transpose_order;
-        ib >> input_k_transpose_order;
-        ib >> input_v_transpose_order;
-        ib >> output_transpose_order;
     }
 };
 
