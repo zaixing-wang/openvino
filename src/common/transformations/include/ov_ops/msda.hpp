@@ -17,26 +17,12 @@ public:
 
     MSDA() = default;
 
-    MSDA(const OutputVector& inputs,
-           const std::vector<int64_t>& order_q = {},
-           const std::vector<int64_t>& order_k = {},
-           const std::vector<int64_t>& order_v = {},
-           const std::vector<int64_t>& order_out = {});
+    MSDA(const OutputVector& inputs);
 
     bool visit_attributes(AttributeVisitor& visitor) override;
     void validate_and_infer_types() override;
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& new_args) const override;
 
-    std::vector<int64_t> get_input0_transpose_order() const { return m_order_q; }
-    std::vector<int64_t> get_input1_transpose_order() const { return m_order_k; }
-    std::vector<int64_t> get_input2_transpose_order() const { return m_order_v; }
-    std::vector<int64_t> get_output_transpose_order() const { return m_order_out; }
-
-protected:
-    std::vector<int64_t> m_order_q;
-    std::vector<int64_t> m_order_k;
-    std::vector<int64_t> m_order_v;
-    std::vector<int64_t> m_order_out;
 };
 
 }  // namespace internal

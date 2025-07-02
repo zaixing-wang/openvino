@@ -33,34 +33,18 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vec) {
 }
 };  // namespace
 
-MSDA::MSDA(const OutputVector& inputs,
-               const std::vector<int64_t>& order_q,
-               const std::vector<int64_t>& order_k,
-               const std::vector<int64_t>& order_v,
-               const std::vector<int64_t>& order_out)
-    : Op(inputs)
-    , m_order_q(order_q)
-    , m_order_k(order_k)
-    , m_order_v(order_v)
-    , m_order_out(order_out) {
+MSDA::MSDA(const OutputVector& inputs)
+    : Op(inputs) {
     constructor_validate_and_infer_types();
 }
 
 std::shared_ptr<ov::Node> MSDA::clone_with_new_inputs(const ov::OutputVector& new_args) const {
     INTERNAL_OP_SCOPE(internal_MSDA_clone_with_new_inputs);
-    return std::make_shared<MSDA>(new_args,
-                                    m_order_q,
-                                    m_order_k,
-                                    m_order_v,
-                                    m_order_out);
+    return std::make_shared<MSDA>(new_args);
 }
 
 bool MSDA::visit_attributes(ov::AttributeVisitor& visitor) {
     INTERNAL_OP_SCOPE(internal_MSDA_visit_attributes);
-    visitor.on_attribute("order_q", m_order_q);
-    visitor.on_attribute("order_k", m_order_k);
-    visitor.on_attribute("order_v", m_order_v);
-    visitor.on_attribute("order_out", m_order_out);
     return true;
 }
 
