@@ -281,3 +281,4 @@ TEST_F(TransformationTestsF, PackMHA) {
         manager.register_pass<ov::pass::PackGQA>();
         { model_ref = build_ref_model_packmha(6, 3); }
     }
+}

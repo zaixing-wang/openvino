@@ -30,6 +30,8 @@
 
 #include "openvino/opsets/opset12.hpp"
 
+#include "ov_ops/msda.hpp"
+
 using namespace ov;
 using namespace ov::op;
 using namespace ov::pass;
@@ -83,7 +85,7 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
     //({flatten_Slice_1194, {-1}}, {{"axis", 0}});
     // ({Unsqueeze_65524 | Unsqueeze_28998, Unsqueeze_65525 | Unsqueeze_28999},
     // wrap_type<opset1::Concat>(pattern::consumers_count(1));
-    auto attn_Concat_17 = wrap_type<Concat>(/*check_input(grid_sampler_block),*/ {{"axis", -2}});
+    auto attn_Concat_17 = wrap_type<Concat>(grid_sampler_block, {{"axis", -2}});
     auto attn_Reshape_17 = wrap_type<Reshape>({attn_Concat_17, any_input()});
 
     std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
@@ -107,11 +109,9 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
 
         std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
-        std::unordered_set<Node*> post_msda_proj;
         std::unordered_map<Node*, const PatternValueMap*> node_to_output_proj_pm;
         for (const auto& pm : matches.at(attn_output_proj_MatMul_transpose_a)) {
             auto root = pm.at(attn_output_proj_MatMul_transpose_a).get_node();
-            post_msda_proj.insert(root);
             node_to_output_proj_pm[root] = &pm;
             std::cout << "wzx debug hit in in" << __LINE__ << ", root=" << root->get_friendly_name() << std::endl;
         }
@@ -125,6 +125,38 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
 
         std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
+        for (const auto& [output_proj_root, output_proj_pm] : node_to_output_proj_pm) {
+            OPENVINO_ASSERT(output_proj_pm->count(attn_Mul_3) > 0);
+
+            auto attn_Mul_3_node = output_proj_pm->at(attn_Mul_3).get_node_shared_ptr();
+            auto input_node = attn_Mul_3_node->input_value(0).get_node();
+
+            std::cout << "wzx debug hit in in" << __LINE__ << ", " << output_proj_root->get_friendly_name() << std::endl;
+
+            if (node_to_grid_concat_pm.count(input_node)) {
+                const auto* grid_concat_pm = node_to_grid_concat_pm.at(input_node);
+
+                std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_concat_pm << std::endl;
+                //
+                // auto attn_value_input_node = grid_concat_pm->at(attn_value_input);
+                // auto attn_offsets_input_node = grid_concat_pm->at(attn_offsets_input);
+                auto attn_weight_input_node = output_proj_pm->at(attn_weight_input);
+
+                OPENVINO_ASSERT(grid_concat_pm->count(grid_sampler_block) > 0);
+                auto grid_sampler_block_node = ov::as_type_ptr<pattern::op::Block>(grid_concat_pm->at(grid_sampler_block).get_node_shared_ptr());
+                OPENVINO_ASSERT(grid_sampler_block_node != nullptr);
+                auto attn_value_input_node = grid_sampler_block_node->get_inputs()[0].get_node_shared_ptr();
+                auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
+                //
+                auto msda_node = std::make_shared<ov::op::internal::MSDA>(OutputVector{attn_value_input_node, attn_offsets_input_node, attn_weight_input_node});
+                auto consumers = output_proj_root->get_output_target_inputs(0);
+                for (auto consumer: consumers) {
+                    consumer.replace_source_output(msda_node);
+                }
+
+                std::cout << "wzx debug hit in in" << __LINE__ << ", " << input_node->get_friendly_name() << std::endl;
+            }            
+        }
     };
 
     register_patterns({attn_Reshape_17, attn_output_proj_MatMul_transpose_a}, callback, true);
