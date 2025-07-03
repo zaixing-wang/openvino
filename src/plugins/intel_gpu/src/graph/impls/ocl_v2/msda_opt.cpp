@@ -68,6 +68,7 @@ public:
 
 std::unique_ptr<primitive_impl> MSDAOptImplementationManager::create_impl(const program_node& node, const RuntimeParams& params) const {
     assert(node.is_type<msda>());
+    std::cout << "wzx debug hit" << std::endl;
     return std::make_unique<MSDAOptImpl>(node, params);
 }
 
