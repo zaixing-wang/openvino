@@ -15,6 +15,8 @@
 #include "openvino/pass/manager.hpp"
 #include "transformations/common_optimizations/multi_scale_deformable_attn_fusion.hpp"
 
+#include "ov_ops/msda.hpp"
+
 using namespace ov;
 using namespace ov::opset10;
 
@@ -69,9 +71,9 @@ std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov:
     return attn_Reshape_17;
 }
 
-std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& input_attn_Reshape_3, const std::shared_ptr<ov::Node>& grid_sample) {
+std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& input_attn_weight, const std::shared_ptr<ov::Node>& grid_sample) {
     using namespace ov::opset10;
-    auto attn_Transpose_8 = std::make_shared<Transpose>(input_attn_Reshape_3, Constant::create(element::i64, Shape{5}, {0,2,1,3,4}));   //  tensor_array<f16[?,8,22223,4,4]> /encoder/layers.1/self_attn/Transpose_8(/encoder/layers.1/self_attn/Reshape_3, Constant_51230)
+    auto attn_Transpose_8 = std::make_shared<Transpose>(input_attn_weight, Constant::create(element::i64, Shape{5}, {0,2,1,3,4}));   //  tensor_array<f16[?,8,22223,4,4]> /encoder/layers.1/self_attn/Transpose_8(/encoder/layers.1/self_attn/Reshape_3, Constant_51230)
     auto attn_Reshape_16 = std::make_shared<Reshape>(attn_Transpose_8, Constant::create(element::i64, Shape{4}, {batch_size,1,0,16}), true);   //  tensor_array<f16[?,1,22223,16]> /encoder/layers.1/self_attn/Reshape_16(/encoder/layers.1/self_attn/Transpose_8, Constant_650344)
     auto attn_Mul_3 = std::make_shared<Multiply>(grid_sample, attn_Reshape_16, "numpy");   //  tensor_array<f16[?,32,22223,16]> /encoder/layers.1/self_attn/Mul_3(/encoder/layers.1/self_attn/Reshape_17, /encoder/layers.1/self_attn/Reshape_16)
     auto attn_ReduceSum = std::make_shared<ReduceSum>(attn_Mul_3, Constant::create(element::i64, Shape{1}, {-1}), false);   //  tensor_array<f16[?,32,22223]> /encoder/layers.1/self_attn/ReduceSum(/encoder/layers.1/self_attn/Mul_3, Constant_62256)
@@ -80,52 +82,51 @@ std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& 
     return attn_output_proj_MatMul_transpose_a;
 }
 
-std::shared_ptr<ov::Model> build_model_msda(int num_layers = 1) {
+std::shared_ptr<ov::Model> build_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_Reshape = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
-    auto input_attn_Sub = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
-    auto input_attn_Reshape_3 = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
 
-    auto grid_sample_1 = build_concated_grid_samplers(input_attn_Reshape, input_attn_Sub);
-    auto attn_Transpose_1 = build_attn_aggregate(input_attn_Reshape_3, grid_sample_1);
+    auto grid_sample_1 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
+    auto attn_Transpose_1 = build_attn_aggregate(input_attn_weight, grid_sample_1);
     grid_sample_1->set_friendly_name("grid_sample_1");
-    attn_Transpose_1->set_friendly_name("attn_Transpose_1");
+    attn_Transpose_1->set_friendly_name("attn_output_proj_MatMul_transpose_a_1");
 
-    auto grid_sample_2 = build_concated_grid_samplers(input_attn_Reshape, input_attn_Sub);
-    auto attn_Transpose_2 = build_attn_aggregate(input_attn_Reshape_3, grid_sample_2);
+    auto grid_sample_2 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
+    auto attn_Transpose_2 = build_attn_aggregate(input_attn_weight, grid_sample_2);
     grid_sample_2->set_friendly_name("grid_sample_2");
-    attn_Transpose_2->set_friendly_name("attn_Transpose_2");
+    attn_Transpose_2->set_friendly_name("attn_output_proj_MatMul_transpose_a_2");
 
     auto attn_output = std::make_shared<Add>(attn_Transpose_1, attn_Transpose_2);
     attn_output->set_friendly_name("attn_output");
 
-    return std::make_shared<ov::Model>(NodeVector{attn_output}, ParameterVector{input_attn_Reshape, input_attn_Sub, input_attn_Reshape_3});
+    return std::make_shared<ov::Model>(NodeVector{attn_output}, ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
 }
 
-std::shared_ptr<ov::Model> build_ref_model_msda(int num_layers = 1) {
+std::shared_ptr<ov::Model> build_ref_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_Reshape = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
-    auto input_attn_Sub = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
-    auto input_attn_Reshape_3 = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
 
-    auto grid_sample_1 = build_concated_grid_samplers(input_attn_Reshape, input_attn_Sub);
-    auto attn_Transpose_1 = build_attn_aggregate(input_attn_Reshape_3, grid_sample_1);
+    auto MSDA_0 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, input_attn_offsets, input_attn_weight});
+    auto MSDA_1 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, input_attn_offsets, input_attn_weight});
 
-    auto grid_sample_2 = build_concated_grid_samplers(input_attn_Reshape, input_attn_Sub);
-    auto attn_Transpose_2 = build_attn_aggregate(input_attn_Reshape_3, grid_sample_2);
+    auto attn_output = std::make_shared<Add>(MSDA_0, MSDA_1);
 
-    auto attn_output = std::make_shared<Add>(attn_Transpose_1, attn_Transpose_2);
-
-    return std::make_shared<ov::Model>(NodeVector{attn_output}, ParameterVector{input_attn_Reshape, input_attn_Sub, input_attn_Reshape_3});
+    return std::make_shared<ov::Model>(NodeVector{attn_output}, ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
 }
 
 TEST_F(TransformationTestsF, MultiScaleDeformableAttnFusion) {
     {
+        disable_rt_info_check();
         model = build_model_msda();
         ov::pass::Serialize(std::string("build_model_msda.xml"), std::string("build_model_msda.bin")).run_on_model(model);
         manager.register_pass<ov::pass::MultiScaleDeformableAttnFusion>();
+        manager.register_pass<ov::pass::PrintModel>("post_MultiScaleDeformableAttnFusion.cpp");
         { model_ref = build_ref_model_msda(); }
     }
 }
