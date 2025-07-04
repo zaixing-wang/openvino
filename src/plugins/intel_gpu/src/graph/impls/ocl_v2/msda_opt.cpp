@@ -16,11 +16,12 @@ namespace {
 
 class MSDAOptGenerator : public KernelGenerator {
 public:
-    MSDAOptGenerator() : KernelGenerator("multi_scale_deformable_attn") {}
+    MSDAOptGenerator() : KernelGenerator("msda_opt") {}
 
 protected:
     [[nodiscard]] JitConstants get_jit_constants(const kernel_impl_params& params) const override {
         auto jit = KernelGenerator::get_jit_constants(params);
+        jit.make("KERNEL_NAME", get_entry_point(params));
         return jit;
     }
 

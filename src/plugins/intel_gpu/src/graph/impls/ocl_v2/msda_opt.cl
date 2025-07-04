@@ -1,3 +1,6 @@
+#include "include/batch_headers/fetch_data.cl"
+
+#define scalar_t INPUT0_TYPE
 scalar_t ms_deform_attn_im2col_bilinear(
     __global const scalar_t *bottom_data, const int height, const int width,
     const int nheads, const int channels, const scalar_t h,
@@ -46,7 +49,7 @@ scalar_t ms_deform_attn_im2col_bilinear(
   return val;
 }
 
-__kernel void multi_scale_deformable_attn(
+KERNEL(multi_scale_deformable_attn)(
     const int n,
     __global const scalar_t *data_value,            //# (bs, num_keys, num_heads, channels)
     __global const int *data_spatial_shapes,        //# (num_levels, 2) Spatial shape of each feature map, last dimension 2 represent (h, w)
@@ -62,6 +65,7 @@ __kernel void multi_scale_deformable_attn(
   // CUDA_1D_KERNEL_LOOP(index, n) {
   // for (int index = 0; index < n; index++)
   {
+    printf("wzx debug hit ocl\n");
     int index = get_global_id(2);
     // printf("[%ld]][%ld][%d][%d] indx = %d/%d\n", get_group_id(2), get_local_id(2), sgid, sglid, index, n);
 
