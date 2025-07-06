@@ -174,6 +174,7 @@ private:
 };
 
 void CreateCustomOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node, CustomLayerPtr customLayer);
+void CreateStub(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node);
 void CreateUnaryEltwiseOp(ProgramBuilder& p, const std::shared_ptr<ov::Node>& node,
                           cldnn::activation_func func, cldnn::activation_additional_params params);
 void CreateElementwiseOp(ProgramBuilder& p,

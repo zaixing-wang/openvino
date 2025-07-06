@@ -52,7 +52,7 @@ JitConstants KernelGenerator::make_base_jit_constants(const RuntimeParams& param
     return jit_constants;
 }
 
-std::string KernelGenerator::build_code(std::string_view template_name, const JitConstants& jit_constants, const std::string& entry_point) {
+std::string KernelGenerator::build_code(std::string_view template_name, const JitConstants& jit_constants, const std::string& entry_point) const {
     CodeBuilder code;
     code.add_line("\n//====================================================")
         .add_line("// Kernel template: " + std::string(template_name) + " ")
@@ -66,7 +66,24 @@ std::string KernelGenerator::build_code(std::string_view template_name, const Ji
         code.value_macro(jit_constant.name, jit_constant.value);
     }
 
-    code.add_line(std::string(SourcesDB::get_kernel_template(template_name)));
+    auto p = std::getenv("MYCL_DIR");
+    bool loaded = false;
+    if (p) {
+        std::string path = p;
+        path += "/" + std::string(m_kernel_name) + std::string(".cm");
+        std::ifstream file(path);
+        if (file.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+            code.add_line(content);
+            loaded = true;
+        } else {
+            std::cout << "'" << m_kernel_name << ".cl' not found in `MYCL_DIR`, fallback to embbding code." << "\n";
+        }
+    }
+    if (!loaded) {
+        code.add_line(std::string(SourcesDB::get_kernel_template(template_name)));
+    }
 
     for (const auto& jit_constant : jit_constants) {
         code.undef_macro(jit_constant.name);
