@@ -1,9 +1,33 @@
 #include "include/batch_headers/fetch_data.cl"
+// const auto batch_size = params.get_input_layout(0).get_shape()[0];
+// const auto spatial_size = params.get_input_layout(0).get_shape()[1];
+// const auto num_heads = params.get_input_layout(0).get_shape()[2];
+// const auto embed_dims = params.get_input_layout(0).get_shape()[3];
+// const auto num_levels = params.get_input_layout(1).get_shape()[0];
+// const auto num_queries = params.get_input_layout(3).get_shape()[1];
+// const auto num_point = params.get_input_layout(3).get_shape()[3];
 
+// jit.make("n", batch_size * num_levels * num_heads * embed_dims);
+// jit.make("batch_size", batch_size);
+// jit.make("spatial_size", spatial_size);
+// jit.make("num_heads", num_heads);
+// jit.make("channels", embed_dims);
+// jit.make("num_levels", num_levels);
+// jit.make("num_query", num_queries);
 #define scalar_t INPUT0_TYPE
+
+#define n INPUT0_BATCH_NUM * INPUT1_BATCH_NUM * INPUT0_SIZE_Y * INPUT0_SIZE_X
+#define bath_size INPUT0_BATCH_NUM
+#define spatial_size INPUT0_FEATURE_NUM
+#define num_heads INPUT0_SIZE_Y
+#define channels INPUT0_SIZE_X
+#define num_levels INPUT1_BATCH_NUM
+#define num_query INPUT3_FEATURE_NUM
+#define num_point INPUT3_SIZE_Y 
+
 scalar_t ms_deform_attn_im2col_bilinear(
     __global const scalar_t *bottom_data, const int height, const int width,
-    const int nheads, const int channels, const scalar_t h,
+    const int nheads, const int ch, const scalar_t h,
     const scalar_t w, const int m, const int c) {
   const int h_low = floor(h);
   const int w_low = floor(w);
@@ -14,13 +38,13 @@ scalar_t ms_deform_attn_im2col_bilinear(
   const scalar_t lw = w - w_low;
   const scalar_t hh = 1 - lh, hw = 1 - lw;
 
-  const int w_stride = nheads * channels;
+  const int w_stride = nheads * ch;
   const int h_stride = width * w_stride;
   const int h_low_ptr_offset = h_low * h_stride;
   const int h_high_ptr_offset = h_low_ptr_offset + h_stride;
   const int w_low_ptr_offset = w_low * w_stride;
   const int w_high_ptr_offset = w_low_ptr_offset + w_stride;
-  const int base_ptr = m * channels + c;
+  const int base_ptr = m * ch + c;
 
   scalar_t v1 = 0;
   if (h_low >= 0 && w_low >= 0) {
@@ -49,16 +73,25 @@ scalar_t ms_deform_attn_im2col_bilinear(
   return val;
 }
 
+// KERNEL(multi_scale_deformable_attn)(
+//     const int n,
+//     __global const scalar_t *data_value,            //# (bs, num_keys, num_heads, channels)
+//     __global const int *data_spatial_shapes,        //# (num_levels, 2) Spatial shape of each feature map, last dimension 2 represent (h, w)
+//     __global const int *data_level_start_index,     //# (num_levels, ) start index of each level and can be represented as [0, h_0*w_0, h_0*w_0+h_1*w_1, ...].
+//     __global const scalar_t *data_sampling_loc,     //# (bs ,num_queries, num_heads, num_levels, num_points, 2), the last dimension 2 represent (x, y).
+//     __global const scalar_t *data_attn_weight,      //# (bs ,num_queries, num_heads, num_levels, num_points), weight of sampling points
+//     const int batch_size,
+//     const int spatial_size, const int num_heads, const int channels,
+//     const int num_levels, const int num_query, const int num_point,
+//     __global scalar_t *data_col) {                  //# (bs, num_keys, num_heads, channels), output
+
 KERNEL(multi_scale_deformable_attn)(
-    const int n,
+    OPTIONAL_SHAPE_INFO_ARG
     __global const scalar_t *data_value,            //# (bs, num_keys, num_heads, channels)
     __global const int *data_spatial_shapes,        //# (num_levels, 2) Spatial shape of each feature map, last dimension 2 represent (h, w)
     __global const int *data_level_start_index,     //# (num_levels, ) start index of each level and can be represented as [0, h_0*w_0, h_0*w_0+h_1*w_1, ...].
     __global const scalar_t *data_sampling_loc,     //# (bs ,num_queries, num_heads, num_levels, num_points, 2), the last dimension 2 represent (x, y).
     __global const scalar_t *data_attn_weight,      //# (bs ,num_queries, num_heads, num_levels, num_points), weight of sampling points
-    const int batch_size,
-    const int spatial_size, const int num_heads, const int channels,
-    const int num_levels, const int num_query, const int num_point,
     __global scalar_t *data_col) {                  //# (bs, num_keys, num_heads, channels), output
 #define sglid          (uint) get_sub_group_local_id()
 #define sgid           (uint) get_sub_group_id()

@@ -39,9 +39,6 @@ public:
     static std::string to_string(const msda_node& node);
 
     typed_primitive_inst(network& network, const msda_node& node);
-
-    std::vector<int32_t> get_mask_seqlens_from_memory() const;
-    static std::vector<int32_t> get_mask_seqlens_from_memory2(memory::ptr mem, stream& stream);
 };
 
 using msda_inst = typed_primitive_inst<msda>;

@@ -35,7 +35,7 @@ TEST(msda_gpu, dynamic) {
     });
 
     // 2. data_spatial_shapes (1,1,1,4) → shape=[4,4,2,2] flat
-    layout shapes_layout{ov::PartialShape{1, 1, 1, 4}, data_types::i32, format::bfyx};
+    layout shapes_layout{ov::PartialShape{1, 1, 2, 2}, data_types::i32, format::bfyx};
     auto spatial_shapes = engine.allocate_memory(shapes_layout);
     set_values(spatial_shapes, {4, 4, 2, 2});
 
@@ -85,15 +85,16 @@ TEST(msda_gpu, dynamic) {
     ASSERT_TRUE(impl != nullptr);
     ASSERT_TRUE(impl->is_dynamic());
 
-    // auto outputs = network.execute();
-    // ASSERT_EQ(outputs.size(), size_t(1));
-    // ASSERT_EQ(outputs.begin()->first, "msda");
+    auto outputs = network.execute();
+    ASSERT_EQ(outputs.size(), size_t(1));
+    
+    ASSERT_EQ(outputs.begin()->first, "msda");
 
-    // auto output_memory = outputs.at("msda").get_memory();
-    // auto output_layout = output_memory->get_layout();
+    auto output_memory = outputs.at("msda").get_memory();
+    auto output_layout = output_memory->get_layout();
 
-    // cldnn::mem_lock<float> output_ptr(output_memory, get_test_stream());
+    cldnn::mem_lock<float> output_ptr(output_memory, get_test_stream());
 
-    // ASSERT_EQ(output_layout.format, format::bfyx);
-    // EXPECT_GT(output_layout.get_linear_size(), 0u);
+    ASSERT_EQ(output_layout.format, format::bfyx);
+    EXPECT_GT(output_layout.get_linear_size(), 0u);
 }
