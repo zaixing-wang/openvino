@@ -162,11 +162,11 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 //     spatial_shapes.new_zeros((1, )),  # (num_level)
                 //     spatial_shapes.prod(1).cumsum(0)[:-1]))
                 size_t num_level = 4;
-                auto spatial_shapes_input_node = Constant::create(element::i32, Shape{num_level, 2}, { 13,  21,
-                                                                                                       25,  42,
-                                                                                                       50,  84,
-                                                                                                      100, 167});
-                auto level_start_index_input_node = Constant::create(element::i32, Shape{4,}, {0,  273, 1323, 5523});
+                auto spatial_shapes_input_node = Constant::create(element::i32, Shape{num_level, 2}, { 100, 167,
+                                                                                            50,  84,
+                                                                                            25,  42,                                                                                
+                                                                                            13,  21,});
+                auto level_start_index_input_node = Constant::create(element::i32, Shape{num_level,}, {0, 16700, 20900, 21950});
 
                 //
                 auto msda_node = std::make_shared<ov::op::internal::MSDA>(OutputVector{attn_value_input_node,
