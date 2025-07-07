@@ -20,7 +20,7 @@
 using namespace ov;
 using namespace ov::opset10;
 
-constexpr int batch_size = 1;
+constexpr int batch_size = -1;
 
 std::shared_ptr<ov::Node> build_grid_sample_block(const std::shared_ptr<ov::Node>& attn_Reshape, const std::shared_ptr<ov::Node>& attn_Sub,
                                                     std::initializer_list<int> slice_start, std::initializer_list<int> slice_end,
@@ -85,9 +85,9 @@ std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& 
 std::shared_ptr<ov::Model> build_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4});
 
     auto grid_sample_1 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
     auto attn_Transpose_1 = build_attn_aggregate(input_attn_weight, grid_sample_1);
@@ -108,9 +108,9 @@ std::shared_ptr<ov::Model> build_model_msda() {
 std::shared_ptr<ov::Model> build_ref_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,32});
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4});
 
     size_t num_level = 4;
     auto spatial_shapes = Constant::create(element::i32, Shape{num_level, 2}, { 100, 167,

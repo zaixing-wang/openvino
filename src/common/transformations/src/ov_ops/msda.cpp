@@ -48,52 +48,39 @@ bool MSDA::visit_attributes(ov::AttributeVisitor& visitor) {
     return true;
 }
 
-// wzx todo
+// Inputs:
+//     value : (bs, num_keys, num_heads, embed_dims)
+//     value_spatial_shapes : (num_levels, 2), last dimension 2 represent (h, w)
+//     level_start_index : (num_levels, ) and can be represented
+//     as [0, h_0*w_0, h_0*w_0+h_1*w_1, ...].
+//     sampling_locations : (bs ,num_queries, num_heads, num_levels, num_points, 2),
+//         the last dimension 2 represent (x, y).
+//     attention_weights : The weight of sampling points used
+//         when calculate the attention, has shape
+//         (bs, num_queries, num_heads, num_levels, num_points),
+
+// Returns:
+//     output: has shape (bs, num_queries, num_heads * embed_dims)
 void MSDA::validate_and_infer_types() {
-    // INTERNAL_OP_SCOPE(internal_MSDA_validate_and_infer_types);
-    // OPENVINO_ASSERT(get_input_size() == 4, "MSDA must have 4 inputs whereas it has ", get_input_size());
+    INTERNAL_OP_SCOPE(internal_MSDA_validate_and_infer_types);
+    OPENVINO_ASSERT(get_input_size() == 5, "MSDA must have 5 inputs whereas it has ", get_input_size());
 
-    // auto out_type = get_input_element_type(0);
+    const auto& input_shapes = ov::util::get_node_input_partial_shapes(*this);
 
-    // const auto& cu_seqlens_type = get_input_element_type(3);
-    // NODE_VALIDATION_CHECK(
-    //     this,
-    //     cu_seqlens_type.is_integral() || cu_seqlens_type.is_dynamic(),
-    //     "The element type of cu_seqlens must be integral.");
+    auto value_ps = get_input_partial_shape(0);
+    auto attention_weights_ps = get_input_partial_shape(4);
 
-    // for (size_t i = 1; i < 3; i++) {
-    //     const auto& element_type = get_input_element_type(i);
-    //     NODE_VALIDATION_CHECK(this,
-    //                           element::Type::merge(out_type, out_type, element_type),
-    //                           "Mixed input types of K/V are not supported.");
-    // }
-    // NODE_VALIDATION_CHECK(this,
-    //                       out_type.is_real() || out_type.is_dynamic(),
-    //                       "The element type of the input tensor must be a floating-point.");
+    auto output_shape = get_output_partial_shape(0);
+    std::cout << "----------------- MSDA::validate_and_infer_types() -----------------" << std::endl;
+    std::cout << "----------------- value shape: " << value_ps <<
+    "," << "attention_weights shape: " << attention_weights_ps <<
+    "->" << output_shape<< std::endl;
 
-    // const auto& input_shapes = ov::util::get_node_input_partial_shapes(*this);
-    // // const auto output_shapes = shape_infer(this, input_shapes);
-    // // transpose shape into BHLS(4D), or HLS(3D)
-    // auto transpose_pshape = [](const ov::PartialShape& pshape, const std::vector<int64_t>& order) {
-    //     if (order.empty())
-    //         return pshape;
+    // output_shape[0] = value_ps[0]; //bs
+    // output_shape[1] = attention_weights_ps[1]; // num_querries
+    // output_shape[2] = value_ps[2] * value_ps[3]; // num_heads * embed_dims
 
-    //     auto transposed_pshape = ov::PartialShape::dynamic(pshape.rank());
-    //     for (size_t i = 0; i < order.size(); i++) {
-    //         transposed_pshape[i] = pshape[order[i]];
-    //     }
-    //     return transposed_pshape;
-    // };
-    // const auto& output_shape = transpose_pshape(input_shapes[0], m_order_q);
-    // // std::cout << "----------------- MSDA::validate_and_infer_types() -----------------" << std::endl;
-    // // std::cout << "----------------- m_order_q: " << m_order_q <<
-    // // "," << "m_order_out: " << m_order_out <<
-    // // "," << input_shapes[0] << "->" << output_shape<< std::endl;
-    // if (m_order_out.size() > 0) {
-    //     set_output_type(0, out_type, transpose_pshape(output_shape, m_order_out));
-    // } else {
-    //     set_output_type(0, out_type, output_shape);
-    // }
+    set_output_type(0, get_input_element_type(0), {value_ps[0], attention_weights_ps[1], value_ps[2] * value_ps[3]});
 }
 
 }  // namespace internal

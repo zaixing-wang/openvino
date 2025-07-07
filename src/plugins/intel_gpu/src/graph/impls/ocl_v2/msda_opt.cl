@@ -98,7 +98,7 @@ KERNEL(multi_scale_deformable_attn)(
   // CUDA_1D_KERNEL_LOOP(index, n) {
   // for (int index = 0; index < n; index++)
   {
-    printf("wzx debug hit ocl\n");
+    // printf("wzx debug hit ocl\n");
     int index = get_global_id(2);
     // printf("[%ld]][%ld][%d][%d] indx = %d/%d\n", get_group_id(2), get_local_id(2), sgid, sglid, index, n);
 

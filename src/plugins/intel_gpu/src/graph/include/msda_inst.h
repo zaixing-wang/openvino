@@ -29,9 +29,7 @@ class typed_primitive_inst<msda> : public typed_primitive_inst_base<msda> {
 
 public:
     template<typename ShapeType>
-    static std::vector<layout> calc_output_layouts(const msda_node& /*node*/, const kernel_impl_params& impl_params) {
-        return forward_input0_shape<ShapeType>(impl_params);
-    }
+    static std::vector<layout> calc_output_layouts(const msda_node& /*node*/, const kernel_impl_params& impl_params);
     static layout calc_output_layout(const msda_node& node, const kernel_impl_params& impl_params) {
         return calc_output_layouts<ov::PartialShape>(node, impl_params)[0];
     }

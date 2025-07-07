@@ -86,7 +86,7 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
     auto attn_offsets_input = any_input();
     auto grid_sampler_block = grid_sample_block(attn_value_input, attn_offsets_input);
 
-    std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+    // std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
     // Pattern 2
     auto attn_weight_input = any_input();
@@ -105,18 +105,18 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
     auto attn_output_proj_MatMul_transpose_a = wrap_type<Transpose>({attn_Reshape_18, any_input()});
 
     auto callback = [=](const std::unordered_map<std::shared_ptr<Node>, std::vector<PatternValueMap>>& matches) {
-        std::cout << "wzx debug hit in in" << __LINE__ << ", matches.size()=" << matches.size() << std::endl;
+        // std::cout << "wzx debug hit in in" << __LINE__ << ", matches.size()=" << matches.size() << std::endl;
         if (matches.size() != 2) {
             return;
         }
 
-        std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+        // std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
         std::unordered_map<Node*, const PatternValueMap*> node_to_output_proj_pm;
         for (const auto& pm : matches.at(attn_output_proj_MatMul_transpose_a)) {
             auto root = pm.at(attn_output_proj_MatMul_transpose_a).get_node();
             node_to_output_proj_pm[root] = &pm;
-            std::cout << "wzx debug hit in in" << __LINE__ << ", root=" << root->get_friendly_name() << std::endl;
+            // std::cout << "wzx debug hit in in" << __LINE__ << ", root=" << root->get_friendly_name() << std::endl;
         }
 
         std::unordered_map<Node*, const PatternValueMap*> node_to_grid_sampler_pm;
@@ -126,11 +126,11 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 std::dynamic_pointer_cast<ov::pass::pattern::op::Block>(root);
             auto anchor = block->get_anchor("attn_Unsqueeze_31", pm).value().get_node_shared_ptr();
             node_to_grid_sampler_pm[anchor.get()] = &pm;
-            std::cout << "wzx debug hit in in" << __LINE__ << ", root=" << root->get_friendly_name() <<
-                    ", anchor=" << anchor->get_friendly_name() << std::endl;
+            // std::cout << "wzx debug hit in in" << __LINE__ << ", root=" << root->get_friendly_name() <<
+                    // ", anchor=" << anchor->get_friendly_name() << std::endl;
         }
 
-        std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+        // std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
         for (const auto& [output_proj_root, output_proj_pm] : node_to_output_proj_pm) {
             OPENVINO_ASSERT(output_proj_pm->count(attn_Concat_17) > 0);
@@ -138,12 +138,12 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
             auto attn_Concat_17_node = output_proj_pm->at(attn_Concat_17).get_node_shared_ptr();
             auto input_node = attn_Concat_17_node->input_value(0).get_node();
 
-            std::cout << "wzx debug hit in in" << __LINE__ << ", " << output_proj_root->get_friendly_name() << std::endl;
+            // std::cout << "wzx debug hit in in" << __LINE__ << ", " << output_proj_root->get_friendly_name() << std::endl;
 
             if (node_to_grid_sampler_pm.count(input_node)) {
                 const auto* grid_sampler_pm = node_to_grid_sampler_pm.at(input_node);
 
-                std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
+                // std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 //
                 // auto attn_value_input_node = grid_sampler_pm->at(attn_value_input);
                 // auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);

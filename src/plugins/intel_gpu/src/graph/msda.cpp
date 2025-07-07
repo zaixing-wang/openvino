@@ -25,6 +25,31 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vec) {
 }
 };  // namespace
 
+template<typename ShapeType>
+std::vector<layout> msda_inst::calc_output_layouts(const msda_node& /*node*/, const kernel_impl_params& impl_param) {
+    auto desc = impl_param.typed_desc<msda>();
+    auto feat_value_input_layout = impl_param.get_input_layout(0);
+    auto attn_weights_input_layout = impl_param.get_input_layout(4);
+
+    auto output_type = feat_value_input_layout.data_type;
+    if (impl_param.has_fused_primitives()) {
+        output_type = impl_param.get_output_element_type();
+    }
+
+    const auto feat_value_ps = feat_value_input_layout.get_partial_shape();
+    const auto attn_weight_ps = attn_weights_input_layout.get_partial_shape();
+    auto output_shape = ov::PartialShape({feat_value_ps[0], attn_weight_ps[1],
+                                         feat_value_ps[2] * feat_value_ps[3]});
+
+    // std::cout << "----------------- msda_inst::calc_output_layouts() -----------------" << std::endl;
+    // std::cout << "----------------- feat_value layouts: " << feat_value_input_layout <<
+    // "," << "attn_weights layout: " << attn_weights_input_layout <<
+    // "->" << output_shape << std::endl;
+
+    format output_format = format::adjust_to_rank(feat_value_input_layout.format, output_shape.size());
+    return { layout{output_shape, output_type, output_format} };
+}
+
 std::string msda_inst::to_string(const msda_node& node) {
     auto desc = node.get_primitive();
     auto node_info = node.desc_to_json();
