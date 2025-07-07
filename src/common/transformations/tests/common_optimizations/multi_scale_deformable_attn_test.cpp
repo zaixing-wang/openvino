@@ -20,8 +20,6 @@
 using namespace ov;
 using namespace ov::opset10;
 
-constexpr int batch_size = -1;
-
 std::shared_ptr<ov::Node> build_grid_sample_block(const std::shared_ptr<ov::Node>& attn_Reshape, const std::shared_ptr<ov::Node>& attn_Sub,
                                                     std::initializer_list<int> slice_start, std::initializer_list<int> slice_end,
                                                     std::initializer_list<int> scale_size,
@@ -54,16 +52,16 @@ std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov:
     using namespace ov::opset10;
 
     //0
-    auto attn_Unsqueeze_31 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,0}, {0,16700}, {batch_size * 8,32,100,167}, {0}, {3});
+    auto attn_Unsqueeze_31 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,0}, {0,16700}, {-1,32,100,167}, {0}, {3});
 
     //1
-    auto attn_Unsqueeze_32 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,16700}, {0,20900}, {batch_size * 8,32,50,84}, {1}, {3});
+    auto attn_Unsqueeze_32 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,16700}, {0,20900}, {-1,32,50,84}, {1}, {3});
 
     //2
-    auto attn_Unsqueeze_33 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,20900}, {0,21950}, {batch_size * 8,32,25,42}, {2}, {3});
+    auto attn_Unsqueeze_33 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,20900}, {0,21950}, {-1,32,25,42}, {2}, {3});
 
     //3
-    auto attn_Unsqueeze_34 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,21950}, {0,22223}, {batch_size * 8,32,13,21}, {3}, {3});
+    auto attn_Unsqueeze_34 = build_grid_sample_block(attn_Reshape, attn_Sub, {0,21950}, {0,22223}, {-1,32,13,21}, {3}, {3});
 
     auto attn_Concat_17 = std::make_shared<Concat>(ov::NodeVector{attn_Unsqueeze_31, attn_Unsqueeze_32, attn_Unsqueeze_33, attn_Unsqueeze_34}, -2);   //  tensor_array<f16[?,32,22223,4,4]> /encoder/layers.1/self_attn/Concat_17(/encoder/layers.1/self_attn/Unsqueeze_31, /encoder/layers.1/self_attn/Unsqueeze_32, /encoder/layers.1/self_attn/Unsqueeze_33, /encoder/layers.1/self_attn/Unsqueeze_34)
     auto attn_Reshape_17 = std::make_shared<Reshape>(attn_Concat_17, Constant::create(element::i64, Shape{4}, {0,32,0,16}), true);   //  tensor_array<f16[?,32,22223,16]> /encoder/layers.1/self_attn/Reshape_17(/encoder/layers.1/self_attn/Concat_17, Constant_650341)
@@ -74,7 +72,7 @@ std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov:
 std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& input_attn_weight, const std::shared_ptr<ov::Node>& grid_sample) {
     using namespace ov::opset10;
     auto attn_Transpose_8 = std::make_shared<Transpose>(input_attn_weight, Constant::create(element::i64, Shape{5}, {0,2,1,3,4}));   //  tensor_array<f16[?,8,22223,4,4]> /encoder/layers.1/self_attn/Transpose_8(/encoder/layers.1/self_attn/Reshape_3, Constant_51230)
-    auto attn_Reshape_16 = std::make_shared<Reshape>(attn_Transpose_8, Constant::create(element::i64, Shape{4}, {batch_size,1,0,16}), true);   //  tensor_array<f16[?,1,22223,16]> /encoder/layers.1/self_attn/Reshape_16(/encoder/layers.1/self_attn/Transpose_8, Constant_650344)
+    auto attn_Reshape_16 = std::make_shared<Reshape>(attn_Transpose_8, Constant::create(element::i64, Shape{4}, {-1,1,0,16}), true);   //  tensor_array<f16[?,1,22223,16]> /encoder/layers.1/self_attn/Reshape_16(/encoder/layers.1/self_attn/Transpose_8, Constant_650344)
     auto attn_Mul_3 = std::make_shared<Multiply>(grid_sample, attn_Reshape_16, "numpy");   //  tensor_array<f16[?,32,22223,16]> /encoder/layers.1/self_attn/Mul_3(/encoder/layers.1/self_attn/Reshape_17, /encoder/layers.1/self_attn/Reshape_16)
     auto attn_ReduceSum = std::make_shared<ReduceSum>(attn_Mul_3, Constant::create(element::i64, Shape{1}, {-1}), false);   //  tensor_array<f16[?,32,22223]> /encoder/layers.1/self_attn/ReduceSum(/encoder/layers.1/self_attn/Mul_3, Constant_62256)
     auto attn_Reshape_18 = std::make_shared<Reshape>(attn_ReduceSum, Constant::create(element::i64, Shape{3}, {-1,256,0}), true);   //  tensor_array<f16[?,256,22223]> /encoder/layers.1/self_attn/Reshape_18(/encoder/layers.1/self_attn/ReduceSum, Constant_650345)
@@ -85,9 +83,9 @@ std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& 
 std::shared_ptr<ov::Model> build_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,32});
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4,2});
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,4,4});
 
     auto grid_sample_1 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
     auto attn_Transpose_1 = build_attn_aggregate(input_attn_weight, grid_sample_1);
@@ -108,9 +106,9 @@ std::shared_ptr<ov::Model> build_model_msda() {
 std::shared_ptr<ov::Model> build_ref_model_msda() {
     using namespace ov::opset10;
 
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,32});
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4,2});
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{batch_size,22223,8,4,4});
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,32});
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,4,4,2});
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, PartialShape{-1,22223,8,4,4});
 
     size_t num_level = 4;
     auto spatial_shapes = Constant::create(element::i32, Shape{num_level, 2}, { 100, 167,
