@@ -20,6 +20,7 @@ struct custom_kernel_reference {
     std::unordered_map<std::string, custom_kernel_info> kernel_map;
     custom_kernel_reference() {
         CALL_REG_CUSTOM_KERNEL(WSAttention)
+        CALL_REG_CUSTOM_KERNEL(SWSAttention)
     };
 } g_custom_kernel_reference;
 

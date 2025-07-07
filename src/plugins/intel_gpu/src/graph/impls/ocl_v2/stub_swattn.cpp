@@ -37,8 +37,9 @@ namespace ov::intel_gpu::ocl {
 
 class AttnCM : public cm::KernelGenerator {
 public:
+    bool m_is_swa;
     static constexpr const char* m_name = "stub_swattn_cm";
-    AttnCM() : KernelGenerator(m_name, "_sdpa_qkv_fused") {}
+    AttnCM(bool is_swa) : KernelGenerator(m_name, is_swa ? "_sw_sdpa_qkv_fused" : "_sdpa_qkv_fused"), m_is_swa(is_swa) {}
 
 protected:
     [[nodiscard]] JitConstants get_jit_constants(const RuntimeParams& params) const override {
@@ -53,6 +54,7 @@ protected:
         }
 
         jit.make("CMFLA_IS_CAUSAL", 0);
+        jit.make("IS_SWA", m_is_swa);
         jit.make("KERNEL_NAME", get_entry_point(params));
 
         return jit;
@@ -72,18 +74,25 @@ struct OPENVINO_CORE_EXPORTS attn_opt : cldnn::custom_kernel {
     std::shared_ptr<stub> m_prim;
     program_node& m_prog_node;
     size_t m_num_heads;
+    bool m_is_swa = false;
     attn_opt(std::shared_ptr<stub> prim, program_node& prog) : m_prim(prim), m_prog_node(prog) {
+        OPENVINO_ASSERT(prim->m_params.count("type"), "attribute 'type' is expected");
         OPENVINO_ASSERT(prim->m_params.count("NUM_HEADS"), "attribute 'NUM_HEADS' is expected");
         OPENVINO_ASSERT(prim->m_params.count("NUM_KV_HEADS"), "attribute 'NUM_KV_HEADS' is expected");
         OPENVINO_ASSERT(prim->m_params.count("SCALE"), "attribute 'SCALE' is expected");
         OPENVINO_ASSERT(prim->m_params.count("HEAD_SIZE"), "attribute 'HEAD_SIZE' is expected");
+        m_is_swa = prim->m_params["type"] == "SWSAttention";
         m_num_heads = std::stoi(prim->m_params["NUM_HEADS"]);
     }
-    virtual std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>> make_stages() override {
-        return {std::make_shared<Stage>(std::make_shared<AttnCM>())};
+    virtual std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>> create_kernels() override {
+        return {std::make_shared<Stage>(std::make_shared<AttnCM>(m_is_swa))};
     }
 
     virtual cldnn::event::ptr execute(const std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>>&kernels, const std::vector<cldnn::event::ptr>& events, cldnn::primitive_inst& ins) override {
+        // node input for WSAttention: qkv[B*window_num, window*window, HIDDEN_DIM*3], mask[1, head_num, window*window, window*window]
+        // node input for SWSAttention: qkv, mask, rotate_mask[window_num, window*window, window*window], hw_pad[2]:h_pad, w_pad
+        // kernel input for WSAttention: seq_len, qkv, mask, output
+        // kernel input for SWSAttention: seq_len, qkv, mask, output, rotate_mask, hw_pad
         auto dep = ins.dependencies()[0];
         auto layout = dep.first->get_impl_params()->get_output_layout(dep.second);
         // wg_size = 16
@@ -121,6 +130,14 @@ struct OPENVINO_CORE_EXPORTS attn_opt : cldnn::custom_kernel {
 
         desc.arguments.push_back({ArgumentDescriptor::Types::OUTPUT, 0});
         args.outputs.push_back(ins.output_memory_ptr(0));
+
+        if (m_is_swa) {
+            desc.arguments.push_back({ArgumentDescriptor::Types::INPUT, 2});
+            args.inputs.push_back(ins.input_memory_ptr(2));
+
+            desc.arguments.push_back({ArgumentDescriptor::Types::INPUT, 3});
+            args.inputs.push_back(ins.input_memory_ptr(3));
+        }
 
         desc.workGroups.global = global;
         desc.workGroups.local = local;
@@ -164,4 +181,5 @@ static std::shared_ptr<custom_kernel> create_attn_kernel(std::shared_ptr<stub> p
 
 namespace cldnn {
 DEFINE_REG_CUSTOM_KERNEL(WSAttention, ov::intel_gpu::ocl::create_attn_kernel);
+DEFINE_REG_CUSTOM_KERNEL(SWSAttention, ov::intel_gpu::ocl::create_attn_kernel);
 }

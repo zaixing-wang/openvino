@@ -45,7 +45,7 @@ public:
     StubOptImpl(const program_node& node, const RuntimeParams& params) : StubOptImpl() {
         const auto& stubop = node.as<stub>();
         m_custom_kernel = stubop.m_kernel;
-        m_stages = m_custom_kernel->make_stages();
+        m_stages = m_custom_kernel->create_kernels();
 
         for (size_t i = 0; i < m_stages.size(); i++) {
             _stages.push_back(m_stages[i].get());
@@ -56,7 +56,7 @@ public:
 
     [[nodiscard]] std::unique_ptr<primitive_impl> clone() const override {
         auto copy = make_deep_copy<StubOptImpl>(this);
-        copy->m_stages = m_custom_kernel->make_stages();
+        copy->m_stages = m_custom_kernel->create_kernels();
         copy->_stages.resize(_stages.size(), 0);
         for (size_t i = 0; i < _stages.size(); i++) {
             copy->_stages[i] = copy->m_stages[i].get();

@@ -20,7 +20,7 @@ class Stage;
 namespace cldnn {
 
 struct custom_kernel {
-    virtual std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>> make_stages() = 0;
+    virtual std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>> create_kernels() = 0;
     virtual cldnn::event::ptr execute(const std::vector<std::shared_ptr<ov::intel_gpu::ocl::Stage>>&kernels, const std::vector<cldnn::event::ptr>& events, cldnn::primitive_inst& ins) = 0;
     virtual layout calc_output_layout(const program_node& node, const kernel_impl_params& params) const = 0;
     virtual std::vector<layout> calc_output_layouts(const program_node& node, const kernel_impl_params& impl_param) const = 0;
@@ -56,6 +56,7 @@ public:
 
         return params;
     }
+    std::vector<size_t> get_shape_infer_dependencies() const override { return {}; }
     std::shared_ptr<custom_kernel> m_kernel;
 };
 

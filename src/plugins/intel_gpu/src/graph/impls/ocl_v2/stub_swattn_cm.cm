@@ -578,7 +578,11 @@ void sdpa_kernel_lsc_prefetch(
     svmptr_t k_base [[type("svmptr_t")]],
     svmptr_t v_base [[type("svmptr_t")]],
     svmptr_t o_base [[type("svmptr_t")]],
-    svmptr_t attn_base [[type("svmptr_t")]]) {
+    svmptr_t attn_base [[type("svmptr_t")]]
+#if IS_SWA
+    , svmptr_t rotate_base [[type("svmptr_t")]]
+#endif
+    ) {
 
     constexpr uint o_pitch = (num_heads * head_size * sizeof(half));
     constexpr uint q_pitch = is_qkv_fused ? ((num_heads + num_kv_heads*2) * head_size * sizeof(half)) : o_pitch;
@@ -612,7 +616,9 @@ void sdpa_kernel_lsc_prefetch(
     lsc::block_2d_desc<half, 1, kv_step, REG_K> b2dK(k_base, kv_stop - 1, head_size*sizeof(half) - 1, kv_pitch - 1, 0, 0);
     lsc::block_2d_desc<half, 1, REG_K, REG_N> b2dV(v_base, kv_stop - 1, head_size*sizeof(half) - 1, kv_pitch - 1, 0, 0);
     lsc::block_2d_desc<half, 1, q_step, kv_step> b2dAttn(attn_base, q_len - 1, kv_len*sizeof(half) - 1, kv_len*sizeof(half) - 1, 0, 0);
-
+#if IS_SWA
+    lsc::block_2d_desc<half, 1, q_step, kv_step> b2dRotate(rotate_base, q_len - 1, kv_len*sizeof(half) - 1, kv_len*sizeof(half) - 1, 0, 0);
+#endif
     static_assert(wg_local_size == 16);
     lsc::block_2d_desc<half, 1, kv_step/wg_local_size, REG_K> prefetch_K(k_base + kv_pitch*wg_local_id, kv_stop - 1, head_size*sizeof(half) - 1, kv_pitch - 1, 0, 0);
     lsc::block_2d_desc<half, 1, REG_K/wg_local_size, REG_N> prefetch_V(v_base + kv_pitch*wg_local_id, kv_stop - 1, head_size*sizeof(half) - 1, kv_pitch - 1, 0, 0);
@@ -660,6 +666,13 @@ void sdpa_kernel_lsc_prefetch(
             }
         }
         {
+#if IS_SWA
+            matrix<half, q_step, kv_step> Rotate;
+            if (rotate_base) {
+                cm_load<lsc::Normal>(Rotate.format<half>(), b2dRotate.set_block_x(kv_pos));
+                Attn += Rotate;
+            }
+#endif
             matrix<half, kv_step, q_step> AttnT;
             Transpose2DMatrix(Attn, AttnT);
             //show(AttnT);
@@ -1102,6 +1115,10 @@ extern "C" _GENX_MAIN_ void KERNEL_NAME(
     half* query_key_value [[type("svmptr_t")]],
     half* attn_mask [[type("svmptr_t")]],
     half* output [[type("svmptr_t")]]
+#if IS_SWA == 1
+    ,half* rotate_mask [[type("svmptr_t")]],
+    int* hw_pad [[type("svmptr_t")]]
+#endif
 #else
     SurfaceIndex query_key_value [[type("buffer_t")]],
     SurfaceIndex output [[type("buffer_t")]]    
@@ -1141,12 +1158,11 @@ extern "C" _GENX_MAIN_ void KERNEL_NAME(
     kv_start = 0;
     kv_seq_len = seqlen;
     q_start = (wg_id * local_size + wg_local_id) * q_step;
+    if (q_start >= seqlen) q_start = 0;
     q_len = q_step;
     if (q_start + q_len > seqlen) {
         q_len = seqlen - q_start;
     }
-    if (q_len <= 0)
-        return;
     //printf("wg:%d.%d  q: %d, +%d   kv: %d, +%d\n", wg_id, wg_local_id, q_start, q_len, kv_start, kv_seq_len);
 
     // qkv is fused 
@@ -1164,7 +1180,27 @@ extern "C" _GENX_MAIN_ void KERNEL_NAME(
     uint v_offset = (kv_start*num_total_heads + num_heads + num_kv_heads + hkv)*head_size + b_offset_qkv;
     uint o_offset = (q_start*num_heads + h)*head_size + batch * seqlen * num_heads * head_size;
     uint attn_offset = h * seqlen * seqlen + q_start * seqlen;
-
+#if IS_SWA == 1
+    uint h_pad_win = hw_pad[0] / WINDOW_SIZE;
+    uint w_pad_win = hw_pad[1] / WINDOW_SIZE;
+    uint hw = h_pad_win * w_pad_win;
+    uint cur_hw = batch % hw;
+    uint cur_h = cur_hw / w_pad_win;
+    uint cur_w = cur_hw % w_pad_win;
+    int is_edge = 0;
+    int rotate_offset = 0;
+    if (cur_h == h_pad_win - 1) {
+        is_edge += 1;
+        rotate_offset = w_pad_win * (h_pad_win - 1) * (WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE) + q_start * (WINDOW_SIZE * WINDOW_SIZE);
+    }
+    if (cur_w == w_pad_win - 1) {
+        is_edge += 1;
+        rotate_offset = (w_pad_win - 1) * (WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE) + q_start * (WINDOW_SIZE * WINDOW_SIZE);
+    }
+    if (is_edge == 2) {
+        rotate_offset = (hw - 1) * (WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE * WINDOW_SIZE) + q_start * (WINDOW_SIZE * WINDOW_SIZE);
+    }
+#endif
 #if USE_LSC == 1
     sdpa_kernel_lsc_prefetch<is_causal, num_heads, num_kv_heads, head_size, 1, 16>(
                                 wg_local_id,
@@ -1176,7 +1212,11 @@ extern "C" _GENX_MAIN_ void KERNEL_NAME(
                                 reinterpret_cast<svmptr_t>(query_key_value + k_offset),
                                 reinterpret_cast<svmptr_t>(query_key_value + v_offset),
                                 reinterpret_cast<svmptr_t>(output + o_offset),
-                                reinterpret_cast<svmptr_t>(attn_mask + attn_offset));
+                                reinterpret_cast<svmptr_t>(attn_mask + attn_offset)
+#if IS_SWA
+                                , is_edge ? reinterpret_cast<svmptr_t>(rotate_mask + rotate_offset) : 0
+#endif
+                                );
 #else
     sdpa_kernel<is_causal, num_heads, num_kv_heads, head_size, 1>(
                                 slm_K,
