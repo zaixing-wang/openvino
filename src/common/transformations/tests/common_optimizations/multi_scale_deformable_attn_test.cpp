@@ -112,8 +112,15 @@ std::shared_ptr<ov::Model> build_ref_model_msda() {
     auto input_attn_offsets = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4,2});
     auto input_attn_weight = std::make_shared<Parameter>(element::f32, Shape{batch_size,22223,8,4,4});
 
-    auto MSDA_0 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, input_attn_offsets, input_attn_weight});
-    auto MSDA_1 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, input_attn_offsets, input_attn_weight});
+    size_t num_level = 4;
+    auto spatial_shapes = Constant::create(element::i32, Shape{num_level, 2}, { 13,  21,
+                                                                                25,  42,
+                                                                                50,  84,
+                                                                                100, 167});
+    auto level_start_index = Constant::create(element::i32, Shape{num_level,}, {0,  273, 1323, 5523});
+
+    auto MSDA_0 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, spatial_shapes, level_start_index, input_attn_offsets, input_attn_weight});
+    auto MSDA_1 = std::make_shared<ov::op::internal::MSDA>(OutputVector{input_attn_value, spatial_shapes, level_start_index, input_attn_offsets, input_attn_weight});
 
     auto attn_output = std::make_shared<Add>(MSDA_0, MSDA_1);
 

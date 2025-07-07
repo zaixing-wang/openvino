@@ -154,8 +154,26 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 OPENVINO_ASSERT(grid_sampler_block_node != nullptr);
                 auto attn_value_input_node = grid_sampler_block_node->get_inputs()[0].get_node_shared_ptr();
                 auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
+
                 //
-                auto msda_node = std::make_shared<ov::op::internal::MSDA>(OutputVector{attn_value_input_node, attn_offsets_input_node, attn_weight_input_node});
+                // # (num_level, 2)
+                // spatial_shapes = torch.cat(spatial_shapes).view(-1, 2)
+                // level_start_index = torch.cat((
+                //     spatial_shapes.new_zeros((1, )),  # (num_level)
+                //     spatial_shapes.prod(1).cumsum(0)[:-1]))
+                size_t num_level = 4;
+                auto spatial_shapes_input_node = Constant::create(element::i32, Shape{num_level, 2}, { 13,  21,
+                                                                                                       25,  42,
+                                                                                                       50,  84,
+                                                                                                      100, 167});
+                auto level_start_index_input_node = Constant::create(element::i32, Shape{4,}, {0,  273, 1323, 5523});
+
+                //
+                auto msda_node = std::make_shared<ov::op::internal::MSDA>(OutputVector{attn_value_input_node,
+                                                                                    spatial_shapes_input_node,
+                                                                                    level_start_index_input_node,
+                                                                                    attn_offsets_input_node,
+                                                                                    attn_weight_input_node});
                 auto consumers = output_proj_root->get_output_target_inputs(0);
                 for (auto consumer: consumers) {
                     consumer.replace_source_output(msda_node);
