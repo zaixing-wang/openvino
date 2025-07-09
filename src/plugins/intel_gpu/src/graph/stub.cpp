@@ -22,6 +22,7 @@ struct custom_kernel_reference {
         CALL_REG_CUSTOM_KERNEL(WSAttention)
         CALL_REG_CUSTOM_KERNEL(SWSAttention)
         CALL_REG_CUSTOM_KERNEL(PadRollPermute)
+        CALL_REG_CUSTOM_KERNEL(PermuteRollCrop)
     };
 } g_custom_kernel_reference;
 
