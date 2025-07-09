@@ -100,12 +100,13 @@ protected:
 
 void CreateStub(ProgramBuilder& p, const std::shared_ptr<ov::Node>& op) {
     auto inputs = p.GetInputInfo(op);
-    std::string layerName = layer_type_name_ID(op);
 
     CustomLayerAttributeVisitor visitor;
     op->visit_attributes(visitor);
     auto params = visitor.get_parameters();
+    OPENVINO_ASSERT(params.count("type"), "'type' attribute is expected.");
 
+    std::string layerName = layer_type_lower(op) + ":" + params.at("type") + "/" + op->get_friendly_name();
     auto stub = cldnn::stub(layerName, inputs, params);
     p.add_primitive(*op, stub);
 }
