@@ -140,6 +140,8 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
     auto attn_output_proj_MatMul_transpose_a = wrap_type<Transpose>({attn_Reshape_18, any_input()});
 
     auto callback = [OV_CAPTURE_CPY_AND_THIS](const std::unordered_map<std::shared_ptr<Node>, std::vector<PatternValueMap>>& matches) {
+        // std::cout << "wzx debug return directly" << std::endl;
+        // return;
         // std::cout << "wzx debug hit in in" << __LINE__ << ", matches.size()=" << matches.size() << std::endl;
         if (matches.size() != 2) {
             return;
