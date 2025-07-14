@@ -19,7 +19,7 @@ typedef std::tuple<MSDAPatternShapeParams>
     MSDAPatternParams;
 
 class MSDAPattern : public testing::WithParamInterface<MSDAPatternShapeParams>,
-                    public ov::test::SubgraphBaseStaticTest {
+                    public ov::test::SubgraphBaseTest {
 public:
     static std::string getTestCaseName(testing::TestParamInfo<MSDAPatternShapeParams> obj);
 

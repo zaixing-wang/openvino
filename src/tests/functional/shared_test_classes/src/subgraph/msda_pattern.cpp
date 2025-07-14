@@ -3,8 +3,6 @@
 //
 #include "shared_test_classes/subgraph/msda_pattern.hpp"
 
-#include "openvino/pass/manager.hpp"
-#include "ov_ops/msda.hpp"
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -16,9 +14,8 @@
 #include "openvino/core/model.hpp"
 #include "openvino/opsets/opset10.hpp"
 #include "openvino/pass/manager.hpp"
-#include "transformations/common_optimizations/multi_scale_deformable_attn_fusion.hpp"
-
 #include "ov_ops/msda.hpp"
+#include "transformations/common_optimizations/multi_scale_deformable_attn_fusion.hpp"
 
 namespace ov {
 namespace test {
@@ -157,12 +154,14 @@ std::shared_ptr<ov::Node> build_attn_aggregate(const std::shared_ptr<ov::Node>& 
     return attn_output_proj_MatMul_transpose_a;
 }
 
-std::shared_ptr<ov::Model> build_model_msda(MSDAPatternShapeParams shape_params) {
+std::shared_ptr<ov::Model> build_model_msda(ov::PartialShape value_shape,
+                                            ov::PartialShape offset_shape,
+                                            ov::PartialShape weight_shape) {
     using namespace ov::opset10;
 
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, shape_params.value_shape);
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, shape_params.offset_shape);
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, shape_params.weight_shape);
+    auto input_attn_value = std::make_shared<Parameter>(element::f32, value_shape);
+    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, offset_shape);
+    auto input_attn_weight = std::make_shared<Parameter>(element::f32, weight_shape);
 
     auto grid_sample_1 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
     auto attn_Transpose_1 = build_attn_aggregate(input_attn_weight, grid_sample_1);
@@ -181,43 +180,6 @@ std::shared_ptr<ov::Model> build_model_msda(MSDAPatternShapeParams shape_params)
                                        ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
 }
 
-std::shared_ptr<ov::Model> build_ref_model_msda(MSDAPatternShapeParams shape_params) {
-    using namespace ov::opset10;
-
-    auto input_attn_value = std::make_shared<Parameter>(element::f32, shape_params.value_shape);
-    auto input_attn_offsets = std::make_shared<Parameter>(element::f32, shape_params.offset_shape);
-    auto input_attn_weight = std::make_shared<Parameter>(element::f32, shape_params.weight_shape);
-
-    size_t num_level = 4;
-    auto spatial_shapes = Constant::create(element::i32,
-                                           Shape{num_level, 2},
-                                           {
-                                               100,
-                                               167,
-                                               50,
-                                               84,
-                                               25,
-                                               42,
-                                               13,
-                                               21,
-                                           });
-    auto level_start_index = Constant::create(element::i32,
-                                              Shape{
-                                                  num_level,
-                                              },
-                                              {0, 16700, 20900, 21950});
-
-    auto MSDA_0 = std::make_shared<ov::op::internal::MSDA>(
-        OutputVector{input_attn_value, spatial_shapes, level_start_index, input_attn_offsets, input_attn_weight});
-    auto MSDA_1 = std::make_shared<ov::op::internal::MSDA>(
-        OutputVector{input_attn_value, spatial_shapes, level_start_index, input_attn_offsets, input_attn_weight});
-
-    auto attn_output = std::make_shared<Add>(MSDA_0, MSDA_1);
-
-    return std::make_shared<ov::Model>(NodeVector{attn_output},
-                                       ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
-}
-
 std::string MSDAPattern::getTestCaseName(testing::TestParamInfo<MSDAPatternShapeParams> obj) {
     MSDAPatternShapeParams shape_params;
     std::tie(shape_params) = obj.param;
@@ -230,12 +192,18 @@ std::string MSDAPattern::getTestCaseName(testing::TestParamInfo<MSDAPatternShape
 }
 
 void MSDAPattern::SetUp() {
-    MSDAPatternShapeParams shape_params;
-    shape_params = GetParam();
-
-    targetDevice = ov::test::utils::DEVICE_GPU;
-
-    function = build_model_msda(shape_params);
+    // MSDAPatternShapeParams shape_params;
+    // shape_params = GetParam();
+    ov::PartialShape value_shape = PartialShape{-1, 22223, 8, 32};
+    ov::PartialShape offset_shape = PartialShape{-1, 22223, 8, 4, 4, 2};
+    ov::PartialShape weight_shape = PartialShape{-1, 22223, 8, 4, 4};
+    InputShape input_value_shape = {value_shape, {Shape{1, 22223, 8, 32}}};
+    InputShape input_offset_shape = {offset_shape, {Shape{1, 22223, 8, 4, 4, 2}}};
+    InputShape input_weight_shape = {weight_shape, {Shape{1, 22223, 8, 4, 4}}};
+    init_input_shapes({input_value_shape, input_offset_shape, input_weight_shape});
+    targetDevice =
+        ov::test::utils::DEVICE_GPU;
+    function = build_model_msda(value_shape, offset_shape, weight_shape);
     // functionRefs = build_model_msda(shape_params);
     // function = functionRefs->clone();
     // ov::pass::Manager manager;
