@@ -70,42 +70,7 @@ public:
     }
 
     std::vector<BufferDescriptor> get_internal_buffer_descs(const kernel_impl_params& params) const override {
-        auto cur_stubop = params.typed_desc<stub>();
-        std::vector<BufferDescriptor> internal_buffers;
-        // const auto& config = cur_stubop->_config;
-        // int max_topk = static_cast<int>(config.topk);
-        // int expert_num = static_cast<int>(config.expert_num);
-
-        // auto hidden_states_layout = params.input_layouts[0];
-        // auto batch = static_cast<int>(hidden_states_layout.get_shape()[0]);
-        // auto data_type = hidden_states_layout.data_type;
-
-        // // softmax+topk
-        // layout layout_topk_id(ov::PartialShape{batch, max_topk}, data_types::u32, cldnn::format::bfyx);
-        // layout layout_topk_weights(ov::PartialShape{batch, max_topk}, data_type, cldnn::format::bfyx);
-        // internal_buffers.emplace_back(layout_topk_id, true);       // topk_id
-        // internal_buffers.emplace_back(layout_topk_weights, true);  // topk_weights
-        // // fast single batch: scratch.up = up(x) * silu(gate(x)); scratch.y = down(scratch.up) * weight[expert_no]
-        // layout layout_gateup_out(ov::PartialShape{batch, static_cast<int>(config.intermediate_size)}, data_type, cldnn::format::bfyx);
-        // layout layout_down_out(ov::PartialShape{batch, static_cast<int>(config.hidden_size)}, data_type, cldnn::format::bfyx);
-        // internal_buffers.emplace_back(layout_gateup_out, true);  // up
-        // internal_buffers.emplace_back(layout_down_out, true);    // y
-        // // onednn: scratch.x, scratch.routing_weights = gather(x, ...)
-        // //         scratch.up = up(scratch.x)
-        // //         scratch.gate = gate(scratch.x) * scratch.up
-        // //         scratch.y = down(scratch.gate) * routing_weights
-        // internal_buffers.emplace_back(layout_down_out, true);  // x, scratch.x has same layout with down output
-        // layout routing_layout(ov::PartialShape{batch * max_topk}, data_type, cldnn::format::bfyx);
-        // internal_buffers.emplace_back(layout_down_out, true);    // routing_weights
-        // internal_buffers.emplace_back(layout_gateup_out, true);  // gate, scratch.gate has same layout with up
-        // // expert masks for gpu
-        // layout index_layout(ov::PartialShape{batch}, ov::element::i32, cldnn::format::bfyx);
-        // for (int i = 0; i < expert_num; i++) {
-        //     internal_buffers.emplace_back(index_layout, true);  // batch
-        //     internal_buffers.emplace_back(index_layout, true);  // topk
-        // }
-
-        return internal_buffers;
+        return m_custom_kernel->get_internal_buffer_descs(params);
     }
 
     cldnn::event::ptr execute_stage(const std::vector<cldnn::event::ptr>& events,

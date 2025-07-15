@@ -25,6 +25,7 @@ struct custom_kernel_reference {
         CALL_REG_CUSTOM_KERNEL(PermuteRollCrop)
         CALL_REG_CUSTOM_KERNEL(AddInDeformable)
         CALL_REG_CUSTOM_KERNEL(PermuteAddConcat)
+        CALL_REG_CUSTOM_KERNEL(MaxSubClip)
     };
 } g_custom_kernel_reference;
 
