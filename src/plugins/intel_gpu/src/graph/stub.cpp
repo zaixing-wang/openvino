@@ -24,6 +24,7 @@ struct custom_kernel_reference {
         CALL_REG_CUSTOM_KERNEL(PadRollPermute)
         CALL_REG_CUSTOM_KERNEL(PermuteRollCrop)
         CALL_REG_CUSTOM_KERNEL(AddInDeformable)
+        CALL_REG_CUSTOM_KERNEL(PermuteAddConcat)
     };
 } g_custom_kernel_reference;
 

@@ -1,0 +1,60 @@
+#include <cm/cm.h>
+#include <cm/cmtl.h>
+
+namespace KERNEL_NAME {
+
+extern "C" _GENX_MAIN_ void KERNEL_NAME(
+    int l0,
+    int l1,
+    int l2,
+    int l3,
+    SurfaceIndex pos0 [[type("buffer_t")]],
+    SurfaceIndex pos1 [[type("buffer_t")]],
+    SurfaceIndex pos2 [[type("buffer_t")]],
+    SurfaceIndex pos3 [[type("buffer_t")]],
+    SurfaceIndex bias0 [[type("buffer_t")]],
+    SurfaceIndex bias1 [[type("buffer_t")]],
+    SurfaceIndex bias2 [[type("buffer_t")]],
+    SurfaceIndex bias3 [[type("buffer_t")]],
+    SurfaceIndex output [[type("buffer_t")]]
+    ) {
+    uint l = cm_group_id(0);
+    uint b = cm_group_id(1);
+
+    vector<half, 128> pos;
+    vector<half, 128> bias;
+    SurfaceIndex surf_pos, surf_bias;
+    uint l_dst = l;
+    uint offset;
+    if (l < l0) {
+        surf_pos = pos0;
+        surf_bias = bias0;
+        offset = b * l0;
+    } else if (l < l0 + l1) {
+        l -= l0;
+        surf_pos = pos1;
+        surf_bias = bias1;
+        offset = b * l1;
+    } else if (l < l0 + l1 + l2) {
+        l -= l0 + l1;
+        surf_pos = pos2;
+        surf_bias = bias2;
+        offset = b * l2;
+    } else {
+        l -= l0 + l1 + l2;
+        surf_pos = pos3;
+        surf_bias = bias3;
+        offset = b * l3;
+    }
+
+    static_assert(HEAD_DIMS % 128 == 0, "HEAD_DIMS must be mutiple of 128");
+    #pragma unroll
+    for (uint i = 0; i < HEAD_DIMS; i += 128) {
+        pos.format<int>() = cm_load<int, 128 / 2, DataSize::Default, CacheHint::Cached, CacheHint::Cached>(surf_pos, ((l + offset) * HEAD_DIMS + i) * sizeof(half));
+        bias.format<int>() = cm_load<int, 128 / 2, DataSize::Default, CacheHint::Cached, CacheHint::Cached>(surf_bias, i * sizeof(half));
+        auto tmp = pos + bias;
+        cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, (l_dst * HEAD_DIMS + i + b * (l0 + l1 + l2 + l3) * HEAD_DIMS) * sizeof(half), tmp.format<int>());
+    }
+}
+
+}
