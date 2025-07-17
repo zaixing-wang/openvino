@@ -92,6 +92,7 @@ ov::pass::pattern::op::Predicate check_input(std::shared_ptr<Node> expected_inpu
 
 std::shared_ptr<ov::Node> grid_sample_block(const std::shared_ptr<ov::Node>& input_attn_value, const std::shared_ptr<ov::Node>& input_attn_offsets) {
     auto attn_Slice = wrap_type<StridedSlice>({input_attn_value, any_input(), any_input(), any_input()});
+    // auto attn_Reshape_5 = wrap_type<Reshape>({attn_Slice, any_input()});
     auto attn_Reshape_4 = wrap_type<Reshape>({attn_Slice, any_input()});
     auto attn_Transpose = wrap_type<Transpose>({attn_Reshape_4, any_input()});
     auto attn_Reshape_5 = wrap_type<Reshape>({attn_Transpose, any_input(/*pattern::shape_matches("[..., img_h, img_w]" && pattern::rank_equals(4)*/)});
@@ -235,7 +236,9 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 OPENVINO_ASSERT(grid_sampler_block_node != nullptr);
                 auto attn_value_input_node = grid_sampler_block_node->get_inputs()[0].get_node_shared_ptr();
                 auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
-
+                std::cout << "wzx debug attn_value friendly_name: " << attn_value_input_node->get_friendly_name() << std::endl;
+                std::cout << "wzx debug attn_offsets friendly_name: " << attn_offsets_input_node->get_friendly_name() << std::endl;
+                std::cout << "wzx debug attn_weight friendly_name: " << attn_weight_input_node.get_node_shared_ptr()->get_friendly_name() << std::endl;
                 //
                 // # (num_level, 2)
                 // spatial_shapes = torch.cat(spatial_shapes).view(-1, 2)
@@ -244,6 +247,8 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 //     spatial_shapes.prod(1).cumsum(0)[:-1]))
                 std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 auto [spatial_shapes_input_node, level_start_index_input_node] = retreive_spatial_shapes(attn_Concat_17_node);
+                std::cout << "wzx debug spatial friendly_name: " << spatial_shapes_input_node->get_friendly_name() << std::endl;
+                std::cout << "wzx debug level_start_index friendly_name: " << level_start_index_input_node->get_friendly_name() << std::endl;
 
                 //
                 std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
@@ -262,5 +267,6 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
         }
     };
 
+    std::cout << "wzx debug register" << std::endl;
     register_patterns({grid_sampler_block, attn_output_proj_MatMul_transpose_a}, callback, true);
 }

@@ -35,6 +35,9 @@ INSTANTIATE_TEST_SUITE_P(smoke,
 std::vector<MSDAPatternShapeParams> shape_params = {
     {{1, 22223, 8, 32}, {1, 22223, 8, 4, 4, 2}, {1, 22223, 8, 4, 4} },
 };
+// std::vector<MSDAPatternShapeParams> shape_params = {
+//     {{-1, 4, 2, 2}, {-1, 4, 2, 4, 2, 2}, {1, 4, 2, 4, 2} },
+// };
 
 INSTANTIATE_TEST_SUITE_P(smoke,
                          MSDAPattern,

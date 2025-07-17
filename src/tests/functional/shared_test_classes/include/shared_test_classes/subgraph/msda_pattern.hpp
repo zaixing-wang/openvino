@@ -10,9 +10,9 @@ namespace ov {
 namespace test {
 
 struct MSDAPatternShapeParams {
-    ov::Shape value_shape;
-    ov::Shape offset_shape;
-    ov::Shape weight_shape;
+    ov::PartialShape value_shape;
+    ov::PartialShape offset_shape;
+    ov::PartialShape weight_shape;
 };
 
 typedef std::tuple<MSDAPatternShapeParams>
@@ -22,9 +22,9 @@ class MSDAPattern : public testing::WithParamInterface<MSDAPatternShapeParams>,
                     public ov::test::SubgraphBaseTest {
 public:
     static std::string getTestCaseName(testing::TestParamInfo<MSDAPatternShapeParams> obj);
-
 protected:
     void SetUp() override;
+    void generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) override;
 };
 
 }  // namespace test

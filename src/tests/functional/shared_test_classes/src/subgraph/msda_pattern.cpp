@@ -22,6 +22,49 @@ namespace test {
 
 using namespace ov::opset10;
 
+// void MSDAPattern::generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) {
+//     inputs.clear();
+//     const auto& funcInputs = function->inputs();
+
+//     for (size_t i = 0; i < funcInputs.size(); ++i) {
+//         const auto& funcInput = funcInputs[i];
+//         const auto& shape = targetInputStaticShapes[i];
+//         ov::Tensor tensor = ov::Tensor(funcInput.get_element_type(), shape);
+
+//         std::fill(tensor.data<float>(), tensor.data<float>() + tensor.get_size(), 1.3f);
+
+//         inputs.insert({funcInput.get_node_shared_ptr(), tensor});
+//     }
+// }
+
+void MSDAPattern::generate_inputs(const std::vector<ov::Shape>& targetInputStaticShapes) {
+    inputs.clear();
+    const auto& funcInputs = function->inputs();
+
+    for (size_t i = 0; i < funcInputs.size(); ++i) {
+        const auto& param = funcInputs[i];
+        const ov::Shape& shape = targetInputStaticShapes[i];
+        const auto& dtype = param.get_element_type();
+
+        ov::Tensor tensor(dtype, shape);
+
+        if (i == 0 || i == 2) {
+            // value or attention_weights: 全部填 1.3
+            auto* data = tensor.data<float>();
+            std::fill(data, data + tensor.get_size(), 1.3f);
+
+        } else if (i == 1) {
+            // offset / sampling_locations: 用 linspace（递增）
+            auto* data = tensor.data<float>();
+            const size_t total = tensor.get_size();
+            for (size_t j = 0; j < total; ++j) {
+                data[j] = static_cast<float>(j) / static_cast<float>(total - 1);  // 0~1递增
+            }
+        }
+        inputs[param.get_node_shared_ptr()] = tensor;
+    }
+}
+
 std::shared_ptr<ov::Node> build_grid_sample_block(const std::shared_ptr<ov::Node>& attn_Reshape,
                                                   const std::shared_ptr<ov::Node>& attn_Sub,
                                                   std::initializer_list<int> slice_start,
@@ -168,15 +211,17 @@ std::shared_ptr<ov::Model> build_model_msda(ov::PartialShape value_shape,
     grid_sample_1->set_friendly_name("grid_sample_1");
     attn_Transpose_1->set_friendly_name("attn_output_proj_MatMul_transpose_a_1");
 
-    auto grid_sample_2 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
-    auto attn_Transpose_2 = build_attn_aggregate(input_attn_weight, grid_sample_2);
-    grid_sample_2->set_friendly_name("grid_sample_2");
-    attn_Transpose_2->set_friendly_name("attn_output_proj_MatMul_transpose_a_2");
+    // auto grid_sample_2 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
+    // auto attn_Transpose_2 = build_attn_aggregate(input_attn_weight, grid_sample_2);
+    // grid_sample_2->set_friendly_name("grid_sample_2");
+    // attn_Transpose_2->set_friendly_name("attn_output_proj_MatMul_transpose_a_2");
 
-    auto attn_output = std::make_shared<Add>(attn_Transpose_1, attn_Transpose_2);
-    attn_output->set_friendly_name("attn_output");
+    // auto attn_output = std::make_shared<Add>(attn_Transpose_1, attn_Transpose_2);
+    // attn_output->set_friendly_name("attn_output");
 
-    return std::make_shared<ov::Model>(NodeVector{attn_output},
+    // return std::make_shared<ov::Model>(NodeVector{attn_output},
+    //                                    ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
+    return std::make_shared<ov::Model>(NodeVector{attn_Transpose_1},
                                        ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
 }
 
@@ -201,8 +246,7 @@ void MSDAPattern::SetUp() {
     InputShape input_offset_shape = {offset_shape, {Shape{1, 22223, 8, 4, 4, 2}}};
     InputShape input_weight_shape = {weight_shape, {Shape{1, 22223, 8, 4, 4}}};
     init_input_shapes({input_value_shape, input_offset_shape, input_weight_shape});
-    targetDevice =
-        ov::test::utils::DEVICE_GPU;
+    targetDevice = ov::test::utils::DEVICE_GPU;
     function = build_model_msda(value_shape, offset_shape, weight_shape);
     // functionRefs = build_model_msda(shape_params);
     // function = functionRefs->clone();
