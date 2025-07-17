@@ -69,55 +69,55 @@ KERNEL(multi_scale_deformable_attn)(
   // CUDA_1D_KERNEL_LOOP(index, n) {
   // for (int index = 0; index < n; index++)
   {
-    if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
-        printf("GWS: [%d, %d, %d]\n", get_global_size(0), get_global_size(1), get_global_size(2));
-        printf("LWS: [%d, %d, %d]\n", get_local_size(0), get_local_size(1), get_local_size(2));
-        printf("Num work groups: [%d, %d, %d]\n",
-               get_num_groups(0), get_num_groups(1), get_num_groups(2));
-          printf("Subgroup size: %u\n", get_sub_group_size());
-        printf("Max subgroups per workgroup: %u\n", get_max_sub_group_size());
-    printf("n=%d, batch_size=%d, spatial_size=%d, num_heads=%d, embed_dims=%d, num_levels=%d, num_query=%d, num_point=%d\n",
-        n, batch_size, spatial_size, num_heads, embed_dims, num_levels, num_query, num_point);
+    // if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
+    //     printf("GWS: [%d, %d, %d]\n", get_global_size(0), get_global_size(1), get_global_size(2));
+    //     printf("LWS: [%d, %d, %d]\n", get_local_size(0), get_local_size(1), get_local_size(2));
+    //     printf("Num work groups: [%d, %d, %d]\n",
+    //            get_num_groups(0), get_num_groups(1), get_num_groups(2));
+    //       printf("Subgroup size: %u\n", get_sub_group_size());
+    //     printf("Max subgroups per workgroup: %u\n", get_max_sub_group_size());
+    // printf("n=%d, batch_size=%d, spatial_size=%d, num_heads=%d, embed_dims=%d, num_levels=%d, num_query=%d, num_point=%d\n",
+    //     n, batch_size, spatial_size, num_heads, embed_dims, num_levels, num_query, num_point);
 
-    printf("data_spatial_shapes = ");
-    for (size_t i = 0; i < num_levels * 2; i++) {
-      printf("%d, ", data_spatial_shapes[i]);
-    }
-    printf("\n");
-    printf("data_spatial_shapes = ");
-    for (size_t i = 0; i < num_levels; i++) {
-      printf("%d, ", data_level_start_index[i]);
-    }
-    printf("\n");
-    printf("data_value: ");
-    for (int i = 0; i < 32; i++) {
-          printf("%f,", data_value[i]);
-      }
-    printf("\n");
+    // printf("data_spatial_shapes = ");
+    // for (size_t i = 0; i < num_levels * 2; i++) {
+    //   printf("%d, ", data_spatial_shapes[i]);
+    // }
+    // printf("\n");
+    // printf("data_spatial_shapes = ");
+    // for (size_t i = 0; i < num_levels; i++) {
+    //   printf("%d, ", data_level_start_index[i]);
+    // }
+    // printf("\n");
+    // printf("data_value: ");
+    // for (int i = 0; i < 32; i++) {
+    //       printf("%f,", data_value[i]);
+    //   }
+    // printf("\n");
 
-    printf("data_attn_weight: ");
-    for (int i = 0; i < 32; i++) {
-          printf("%f,", data_attn_weight[i]);
-      }
-    printf("\n");
-    printf("data_sampling_loc: ");
-    for (int i = 0; i < 16; i++) {
-          printf("%f,", data_sampling_loc[i]);
-      }
-    printf("\n");
+    // printf("data_attn_weight: ");
+    // for (int i = 0; i < 32; i++) {
+    //       printf("%f,", data_attn_weight[i]);
+    //   }
+    // printf("\n");
+    // printf("data_sampling_loc: ");
+    // for (int i = 0; i < 16; i++) {
+    //       printf("%f,", data_sampling_loc[i]);
+    //   }
+    // printf("\n");
  
-    }
+    // }
 
-    if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
-    printf("INPUT0 (value): shape = [%d, %d, %d, %d]\n", INPUT0_BATCH_NUM, INPUT0_FEATURE_NUM, INPUT0_SIZE_Y, INPUT0_SIZE_X);
-    printf("INPUT1 (spatial_shapes): shape = [%d, %d, %d, %d]\n", INPUT1_BATCH_NUM, INPUT1_FEATURE_NUM, INPUT1_SIZE_Y, INPUT1_SIZE_X);
-    printf("INPUT2 (level_start_index): shape = [%d, %d, %d, %d]\n", INPUT2_BATCH_NUM, INPUT2_FEATURE_NUM, INPUT2_SIZE_Y, INPUT2_SIZE_X);
-    printf("INPUT3 (sampling_locations): shape = [%d, %d, %d, %d, %d, %d]\n",
-           INPUT3_BATCH_NUM, INPUT3_FEATURE_NUM, INPUT3_SIZE_W, INPUT3_SIZE_Z, INPUT3_SIZE_Y, INPUT3_SIZE_X);
-    printf("INPUT4 (attn_weights): shape = [%d, %d, %d, %d, %d]\n",
-           INPUT4_BATCH_NUM, INPUT4_FEATURE_NUM, INPUT4_SIZE_Z, INPUT4_SIZE_Y, INPUT4_SIZE_X);
-    printf("OUTPUT0 (output): shape = [%d, %d, %d, %d]\n", OUTPUT_BATCH_NUM, OUTPUT_FEATURE_NUM, OUTPUT_SIZE_Y, OUTPUT_SIZE_X);
-}
+//     if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
+//     printf("INPUT0 (value): shape = [%d, %d, %d, %d]\n", INPUT0_BATCH_NUM, INPUT0_FEATURE_NUM, INPUT0_SIZE_Y, INPUT0_SIZE_X);
+//     printf("INPUT1 (spatial_shapes): shape = [%d, %d, %d, %d]\n", INPUT1_BATCH_NUM, INPUT1_FEATURE_NUM, INPUT1_SIZE_Y, INPUT1_SIZE_X);
+//     printf("INPUT2 (level_start_index): shape = [%d, %d, %d, %d]\n", INPUT2_BATCH_NUM, INPUT2_FEATURE_NUM, INPUT2_SIZE_Y, INPUT2_SIZE_X);
+//     printf("INPUT3 (sampling_locations): shape = [%d, %d, %d, %d, %d, %d]\n",
+//            INPUT3_BATCH_NUM, INPUT3_FEATURE_NUM, INPUT3_SIZE_W, INPUT3_SIZE_Z, INPUT3_SIZE_Y, INPUT3_SIZE_X);
+//     printf("INPUT4 (attn_weights): shape = [%d, %d, %d, %d, %d]\n",
+//            INPUT4_BATCH_NUM, INPUT4_FEATURE_NUM, INPUT4_SIZE_Z, INPUT4_SIZE_Y, INPUT4_SIZE_X);
+//     printf("OUTPUT0 (output): shape = [%d, %d, %d, %d]\n", OUTPUT_BATCH_NUM, OUTPUT_FEATURE_NUM, OUTPUT_SIZE_Y, OUTPUT_SIZE_X);
+// }
     int index = get_global_id(2);
     // printf("[%ld]][%ld][%d][%d] indx = %d/%d\n", get_group_id(2), get_local_id(2), sgid, sglid, index, n);
 
@@ -151,10 +151,14 @@ KERNEL(multi_scale_deformable_attn)(
       //      l_col, level_start_id, spatial_h, spatial_w,
       //      (int)(data_value_ptr - data_value));
       for (int p_col = 0; p_col < num_point; ++p_col) {
-        const INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
-        const INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        // const INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
+        // const INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
+        INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
         const INPUT0_TYPE weight = data_attn_weight[data_weight_ptr];
 
+        loc_w = (loc_w + 1.0) * 0.5;
+        loc_h = (loc_h + 1.0) * 0.5;
         const INPUT0_TYPE h_im = loc_h * spatial_h - 0.5;
         const INPUT0_TYPE w_im = loc_w * spatial_w - 0.5;
 

@@ -260,6 +260,7 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 auto consumers = output_proj_root->get_output_target_inputs(0);
                 for (auto consumer: consumers) {
                     consumer.replace_source_output(msda_node);
+                    std::cout << "wzx debug msda output name" << msda_node->output(0).get_node()->get_friendly_name() << std::endl;
                 }
 
                 std::cout << "wzx debug hit in in" << __LINE__ << ", " << input_node->get_friendly_name() << std::endl;

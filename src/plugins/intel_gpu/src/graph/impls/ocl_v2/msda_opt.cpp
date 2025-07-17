@@ -83,7 +83,7 @@ protected:
             const auto embed_dims = params.get_input_layout(0).get_shape()[3];
             // to update
             wgs.global = {1, 1, batch_size * num_queries * num_heads * embed_dims};
-            std::cout << "wzx debug gws:" << batch_size * num_queries * num_heads * embed_dims << std::endl;
+            // std::cout << "wzx debug gws:" << batch_size * num_queries * num_heads * embed_dims << std::endl;
             wgs.local = {1, 1, 64};
         }};
     }
