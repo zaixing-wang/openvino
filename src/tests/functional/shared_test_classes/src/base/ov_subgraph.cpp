@@ -10,34 +10,28 @@
 #include <thread>
 
 #ifdef _WIN32
-#include <process.h>
+#    include <process.h>
 #endif
 
-#include "openvino/pass/manager.hpp"
-#include "openvino/core/preprocess/pre_post_process.hpp"
-#include "openvino/pass/serialize.hpp"
-#include "transformations/convert_precision.hpp"
-
-#include "template/properties.hpp"
-
-#include "common_test_utils/graph_comparator.hpp"
-
-
 #include "common_test_utils/file_utils.hpp"
+#include "common_test_utils/graph_comparator.hpp"
 #include "common_test_utils/ov_tensor_utils.hpp"
 #include "common_test_utils/ov_test_utils.hpp"
 #include "functional_test_utils/crash_handler.hpp"
-
+#include "openvino/core/preprocess/pre_post_process.hpp"
+#include "openvino/pass/manager.hpp"
+#include "openvino/pass/serialize.hpp"
 #include "shared_test_classes/base/ov_subgraph.hpp"
-#include "shared_test_classes/base/utils/compare_results.hpp"
 #include "shared_test_classes/base/utils/calculate_thresholds.hpp"
-
+#include "shared_test_classes/base/utils/compare_results.hpp"
 #include "shared_test_classes/base/utils/ranges.hpp"
+#include "template/properties.hpp"
+#include "transformations/convert_precision.hpp"
 
 namespace ov {
 namespace test {
 
-std::ostream& operator <<(std::ostream& os, const InputShape& inputShape) {
+std::ostream& operator<<(std::ostream& os, const InputShape& inputShape) {
     auto shape_str = ov::test::utils::vec2str(inputShape.second);
     std::replace(shape_str.begin(), shape_str.end(), ',', '.');
     os << ov::test::utils::partialShape2str({inputShape.first}) << "_" << shape_str;
@@ -48,9 +42,8 @@ void SubgraphBaseTest::run() {
     is_reported = true;
     bool isCurrentTestDisabled = ov::test::utils::current_test_is_disabled();
 
-    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ?
-         ov::test::utils::PassRate::Statuses::SKIPPED :
-         ov::test::utils::PassRate::Statuses::CRASHED;
+    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ? ov::test::utils::PassRate::Statuses::SKIPPED
+                                                                       : ov::test::utils::PassRate::Statuses::CRASHED;
     summary.setDeviceName(targetDevice);
     summary.updateOPsStats(function, status, rel_influence_coef);
 
@@ -70,7 +63,8 @@ void SubgraphBaseTest::run() {
     if (jmpRes == ov::test::utils::JMP_STATUS::ok) {
         crashHandler->StartTimer();
 
-        ASSERT_FALSE(targetStaticShapes.empty() && !function->get_parameters().empty()) << "Target Static Shape is empty!!!";
+        ASSERT_FALSE(targetStaticShapes.empty() && !function->get_parameters().empty())
+            << "Target Static Shape is empty!!!";
         std::string errorMessage;
         try {
             compile_model();
@@ -137,9 +131,8 @@ void SubgraphBaseTest::serialize() {
 void SubgraphBaseTest::query_model() {
     bool isCurrentTestDisabled = ov::test::utils::current_test_is_disabled();
 
-    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ?
-         ov::test::utils::PassRate::Statuses::SKIPPED :
-         ov::test::utils::PassRate::Statuses::CRASHED;
+    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ? ov::test::utils::PassRate::Statuses::SKIPPED
+                                                                       : ov::test::utils::PassRate::Statuses::CRASHED;
     summary.setDeviceName(targetDevice);
     summary.updateOPsStats(function, status, rel_influence_coef);
 
@@ -196,9 +189,8 @@ void SubgraphBaseTest::query_model() {
 void SubgraphBaseTest::import_export() {
     bool isCurrentTestDisabled = ov::test::utils::current_test_is_disabled();
 
-    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ?
-         ov::test::utils::PassRate::Statuses::SKIPPED :
-         ov::test::utils::PassRate::Statuses::CRASHED;
+    ov::test::utils::PassRate::Statuses status = isCurrentTestDisabled ? ov::test::utils::PassRate::Statuses::SKIPPED
+                                                                       : ov::test::utils::PassRate::Statuses::CRASHED;
     summary.setDeviceName(targetDevice);
     summary.updateOPsStats(function, status, rel_influence_coef);
 
@@ -247,8 +239,7 @@ void SubgraphBaseTest::import_export() {
     }
 }
 
-void SubgraphBaseTest::compare(const std::vector<ov::Tensor>& expected,
-                               const std::vector<ov::Tensor>& actual) {
+void SubgraphBaseTest::compare(const std::vector<ov::Tensor>& expected, const std::vector<ov::Tensor>& actual) {
     ASSERT_EQ(expected.size(), actual.size());
     ASSERT_EQ(expected.size(), function->get_results().size());
     init_thresholds();
@@ -260,9 +251,15 @@ void SubgraphBaseTest::compare(const std::vector<ov::Tensor>& expected,
             std::shared_ptr<ov::Node> inputNode = result->get_input_node_shared_ptr(i);
             auto it = compareMap.find(inputNode->get_type_info());
             ASSERT_NE(it, compareMap.end());
-            it->second(inputNode, i, inference_precision,
-                       expected[j], actual[j],
-                       abs_threshold, rel_threshold, topk_threshold, mvn_threshold);
+            it->second(inputNode,
+                       i,
+                       inference_precision,
+                       expected[j],
+                       actual[j],
+                       abs_threshold,
+                       rel_threshold,
+                       topk_threshold,
+                       mvn_threshold);
         }
     }
 }
@@ -303,7 +300,8 @@ void SubgraphBaseTest::compile_model() {
     if (is_report_stages) {
         auto end_time = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = end_time - start_time;
-        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::compile_model()` is finished successfully. Duration is " << duration.count() << "s" << std::endl;
+        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::compile_model()` is finished successfully. Duration is "
+                  << duration.count() << "s" << std::endl;
     }
     try {
         inference_precision = compiledModel.get_property(ov::hint::inference_precision);
@@ -318,10 +316,10 @@ void SubgraphBaseTest::generate_inputs(const std::vector<ov::Shape>& targetInput
     modelRange.find_mode_ranges(function);
 
     auto itTargetShape = targetInputStaticShapes.begin();
-    for (const auto &param : function->get_parameters()) {
+    for (const auto& param : function->get_parameters()) {
         std::shared_ptr<ov::Node> inputNode = param;
         for (size_t i = 0; i < param->get_output_size(); i++) {
-            for (const auto &node : param->get_output_target_inputs(i)) {
+            for (const auto& node : param->get_output_target_inputs(i)) {
                 std::shared_ptr<ov::Node> nodePtr = node.get_node()->shared_from_this();
                 for (size_t port = 0; port < nodePtr->get_input_size(); ++port) {
                     if (nodePtr->get_input_node_ptr(port)->shared_from_this() == inputNode->shared_from_this()) {
@@ -359,10 +357,9 @@ void SubgraphBaseTest::update_ref_model() {
     ov::preprocess::PrePostProcessor p(functionRefs);
     const auto& inputNodes = functionRefs->inputs();
     for (size_t i = 0; i < inputNodes.size(); ++i) {
-        auto itr = std::find_if(inputs.begin(), inputs.end(),
-                                [&](const InputsMap::value_type& item) {
-                                    return item.first->get_friendly_name() == inputNodes[i].get_node_shared_ptr()->get_friendly_name();
-                                });
+        auto itr = std::find_if(inputs.begin(), inputs.end(), [&](const InputsMap::value_type& item) {
+            return item.first->get_friendly_name() == inputNodes[i].get_node_shared_ptr()->get_friendly_name();
+        });
         if (itr != inputs.end()) {
             auto elementType = itr->second.get_element_type();
             if (inputNodes[i].get_element_type() != elementType) {
@@ -392,7 +389,7 @@ void SubgraphBaseTest::match_parameters(const ov::ParameterVector& params, const
     }
     if (params.size() == ref_params.size()) {
         for (size_t in_idx = 0; in_idx < params.size(); ++in_idx) {
-            matched_parameters.insert({ ref_params[in_idx], params[in_idx] });
+            matched_parameters.insert({ref_params[in_idx], params[in_idx]});
         }
     } else {
         auto it = params.begin();
@@ -410,7 +407,7 @@ void SubgraphBaseTest::match_parameters(const ov::ParameterVector& params, const
                 is_match_in = false;
             }
             if (is_match_in) {
-                matched_parameters.insert({ *it_ref, *it });
+                matched_parameters.insert({*it_ref, *it});
                 ++it_ref;
             }
             ++it;
@@ -423,7 +420,7 @@ void SubgraphBaseTest::match_parameters(const ov::ParameterVector& params, const
 
 std::vector<ov::Tensor> SubgraphBaseTest::calculate_refs() {
     if (is_report_stages) {
-        std::cout << "[ REFERENCE   ] `SubgraphBaseTest::calculate_refs()` is started"<< std::endl;
+        std::cout << "[ REFERENCE   ] `SubgraphBaseTest::calculate_refs()` is started" << std::endl;
     }
     auto start_time = std::chrono::system_clock::now();
 
@@ -440,14 +437,15 @@ std::vector<ov::Tensor> SubgraphBaseTest::calculate_refs() {
     if (is_report_stages) {
         auto end_time = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = end_time - start_time;
-        std::cout << "[ REFERENCE   ] `SubgraphBaseTest::calculate_refs()` is finished successfully. Duration is " << duration.count() << "s" << std::endl;
+        std::cout << "[ REFERENCE   ] `SubgraphBaseTest::calculate_refs()` is finished successfully. Duration is "
+                  << duration.count() << "s" << std::endl;
     }
     return outputs;
 }
 
 std::vector<ov::Tensor> SubgraphBaseTest::get_plugin_outputs() {
     if (is_report_stages) {
-        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::get_plugin_outputs()` is started"<< std::endl;
+        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::get_plugin_outputs()` is started" << std::endl;
     }
     auto start_time = std::chrono::system_clock::now();
 
@@ -459,7 +457,8 @@ std::vector<ov::Tensor> SubgraphBaseTest::get_plugin_outputs() {
     if (is_report_stages) {
         auto end_time = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = end_time - start_time;
-        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::get_plugin_outputs()` is finished successfully. Duration is " << duration.count() << "s" << std::endl;
+        std::cout << "[ PLUGIN      ] `SubgraphBaseTest::get_plugin_outputs()` is finished successfully. Duration is "
+                  << duration.count() << "s" << std::endl;
     }
     return outputs;
 }
@@ -504,9 +503,10 @@ void SubgraphBaseTest::validate() {
     }
 
     ASSERT_EQ(actualOutputs.size(), expectedOutputs.size())
-        << "TEMPLATE plugin has " << expectedOutputs.size() << " outputs, while " << targetDevice << " " << actualOutputs.size();
+        << "TEMPLATE plugin has " << expectedOutputs.size() << " outputs, while " << targetDevice << " "
+        << actualOutputs.size();
     if (is_report_stages) {
-        std::cout << "[ COMPARATION ] `ov_tensor_utils.hpp::compare()` is started"<< std::endl;
+        std::cout << "[ COMPARATION ] `ov_tensor_utils.hpp::compare()` is started" << std::endl;
     }
     auto start_time = std::chrono::system_clock::now();
 
@@ -514,13 +514,15 @@ void SubgraphBaseTest::validate() {
     if (is_report_stages) {
         auto end_time = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = end_time - start_time;
-        std::cout << "[ COMPARATION ] `ov_tensor_utils.hpp::compare()` is finished successfully. Duration is " << duration.count() << "s" << std::endl;
+        std::cout << "[ COMPARATION ] `ov_tensor_utils.hpp::compare()` is finished successfully. Duration is "
+                  << duration.count() << "s" << std::endl;
     }
 }
 
 void SubgraphBaseTest::init_thresholds() {
     double max_abs_threshold = 0.f, max_rel_threshold = 0.f;
-    std::tie(max_abs_threshold, max_rel_threshold) = ov::test::utils::calculate_thresholds_by_model(function, functionRefs, inference_precision);
+    std::tie(max_abs_threshold, max_rel_threshold) =
+        ov::test::utils::calculate_thresholds_by_model(function, functionRefs, inference_precision);
     if (abs_threshold == disable_threshold) {
         abs_threshold = max_abs_threshold;
     }
@@ -554,18 +556,22 @@ void SubgraphBaseTest::init_input_shapes(const std::vector<InputShape>& shapes) 
     }
 }
 
-void SubgraphBaseTest::compare_nodes(const std::shared_ptr<ov::Node>& node1, const std::shared_ptr<ov::Node>& node2, std::ostream& err_log) {
+void SubgraphBaseTest::compare_nodes(const std::shared_ptr<ov::Node>& node1,
+                                     const std::shared_ptr<ov::Node>& node2,
+                                     std::ostream& err_log) {
     // compare inputs size, element_type and constant's values
     if (node1->get_input_size() != node2->get_input_size()) {
         err_log << "Number of inputs is different: " << to_str(node1->get_input_size()) << " for "
-                << node1->get_friendly_name() << " and " << to_str(node2->get_input_size()) << " for " + node2->get_friendly_name();
+                << node1->get_friendly_name() << " and " << to_str(node2->get_input_size())
+                << " for " + node2->get_friendly_name();
     }
 
     for (size_t i = 0; i < node1->get_input_size(); ++i) {
         if (node1->input(i).get_element_type() != node2->input(i).get_element_type()) {
             err_log << "Different element type detected\n"
-                    << node1->get_friendly_name() << " Input(" << i << ") " << node1->input(i).get_element_type() << " and "
-                    << node2->get_friendly_name() << " Input(" << i << ") " << node2->input(i).get_element_type() << std::endl;
+                    << node1->get_friendly_name() << " Input(" << i << ") " << node1->input(i).get_element_type()
+                    << " and " << node2->get_friendly_name() << " Input(" << i << ") "
+                    << node2->input(i).get_element_type() << std::endl;
         }
 
         const auto const_in_1 = ov::as_type_ptr<ov::op::v0::Constant>(node1->get_input_node_shared_ptr(i));
@@ -582,27 +588,31 @@ void SubgraphBaseTest::compare_nodes(const std::shared_ptr<ov::Node>& node1, con
     // compare outputs size, shape, element_type
     if (node1->get_output_size() != node2->get_output_size()) {
         err_log << "Number of outputs is different: " << to_str(node1->get_output_size()) << " for "
-                << node1->get_friendly_name() << " and " << to_str(node2->get_output_size()) << " for " << node2->get_friendly_name();
+                << node1->get_friendly_name() << " and " << to_str(node2->get_output_size()) << " for "
+                << node2->get_friendly_name();
     }
 
     for (int i = 0; i < node1->get_output_size(); ++i) {
         if (!node1->output(i).get_partial_shape().same_scheme(node2->output(i).get_partial_shape())) {
             err_log << "Different shape detected\n"
-                    << node1->get_friendly_name() << " Output(" << i << ") " << node1->output(i).get_partial_shape() << " and "
-                    << node2->get_friendly_name() << " Output(" << i << ") " << node2->output(i).get_partial_shape() << std::endl;
+                    << node1->get_friendly_name() << " Output(" << i << ") " << node1->output(i).get_partial_shape()
+                    << " and " << node2->get_friendly_name() << " Output(" << i << ") "
+                    << node2->output(i).get_partial_shape() << std::endl;
         }
 
         if (node1->output(i).get_element_type() != node2->output(i).get_element_type()) {
             err_log << "Different element type detected\n"
-                    << node1->get_friendly_name() << " Input(" << i << ") " << node1->output(i).get_element_type() << " and "
-                    << node2->get_friendly_name() << " Input(" << i << ") " << node2->output(i).get_element_type() << std::endl;
+                    << node1->get_friendly_name() << " Input(" << i << ") " << node1->output(i).get_element_type()
+                    << " and " << node2->get_friendly_name() << " Input(" << i << ") "
+                    << node2->output(i).get_element_type() << std::endl;
         }
     }
 }
 
-void SubgraphBaseTest::compare_models_param_res(const std::shared_ptr<ov::Model>& f, const std::shared_ptr<ov::Model>& f_ref) {
+void SubgraphBaseTest::compare_models_param_res(const std::shared_ptr<ov::Model>& f,
+                                                const std::shared_ptr<ov::Model>& f_ref) {
     if (is_report_stages) {
-        std::cout << "[ COMPARATION ] `compare_models_param_res(f, ref_f)` is started"<< std::endl;
+        std::cout << "[ COMPARATION ] `compare_models_param_res(f, ref_f)` is started" << std::endl;
     }
     auto start_time = std::chrono::system_clock::now();
 
@@ -619,7 +629,7 @@ void SubgraphBaseTest::compare_models_param_res(const std::shared_ptr<ov::Model>
     auto f_ref_results = f_ref->get_results();
     if (f_results.size() != f_ref_results.size()) {
         throw std::runtime_error("Number of results is different: " + to_str(f_results.size()) + " and " +
-                                to_str(f_ref_results.size()));
+                                 to_str(f_ref_results.size()));
     }
 
     for (size_t i = 0; i < f_results.size(); ++i) {
@@ -635,7 +645,8 @@ void SubgraphBaseTest::compare_models_param_res(const std::shared_ptr<ov::Model>
     if (is_report_stages) {
         auto end_time = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = end_time - start_time;
-        std::cout << "[ COMPARATION ] `compare_models_param_res(f, ref_f)` is finished. Duration is " << duration.count() << "s" << std::endl;
+        std::cout << "[ COMPARATION ] `compare_models_param_res(f, ref_f)` is finished. Duration is "
+                  << duration.count() << "s" << std::endl;
     }
 
     if (!errors.str().empty()) {
