@@ -8,7 +8,7 @@
 #define num_query INPUT3_FEATURE_NUM
 #define num_point INPUT3_SIZE_Y 
 
-INPUT0_TYPE ms_deform_attn_im2col_bilinear(
+INPUT0_TYPE FUNC(ms_deform_attn_im2col_bilinear)(
     __global const INPUT0_TYPE *bottom_data, const int height, const int width,
     const int nheads, const int ed, const INPUT0_TYPE h,
     const INPUT0_TYPE w, const int m, const int c) {
@@ -163,7 +163,7 @@ KERNEL(multi_scale_deformable_attn)(
         const INPUT0_TYPE w_im = loc_w * spatial_w - 0.5;
 
         if (h_im > -1 && w_im > -1 && h_im < spatial_h && w_im < spatial_w) {
-          col += ms_deform_attn_im2col_bilinear(data_value_ptr, spatial_h,
+          col += FUNC_CALL(ms_deform_attn_im2col_bilinear)(data_value_ptr, spatial_h,
                                                 spatial_w, num_heads, embed_dims,
                                                 h_im, w_im, m_col, c_col) *
                  weight;
