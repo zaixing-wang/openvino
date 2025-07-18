@@ -105,7 +105,9 @@ std::shared_ptr<ov::Node> grid_sample_block(const std::shared_ptr<ov::Node>& inp
     auto attn_Reshape_6 = wrap_type<Reshape>({attn_Transpose_1, any_input()});
 
     auto attn_GridSample = wrap_type<GridSample>({attn_Reshape_5, attn_Reshape_6});
-    auto attn_Unsqueeze_31 = wrap_type<Reshape>({attn_GridSample, any_input()});
+    //auto attn_Unsqueeze_reshape = wrap_type<Reshape>({attn_GridSample, any_input()});
+    auto attn_Unsqueeze = wrap_type<Unsqueeze>({attn_GridSample, any_input()});
+    auto attn_Unsqueeze_31 = attn_Unsqueeze;
 
     auto block = std::make_shared<pattern::op::Block>(OutputVector{input_attn_value, input_attn_offsets}, OutputVector{attn_Unsqueeze_31}, "grid_sample_block");
 
@@ -150,7 +152,7 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
             return;
         }
 
-        // std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+        //std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
         std::unordered_map<Node*, const PatternValueMap*> node_to_output_proj_pm;
         for (const auto& pm : matches.at(attn_output_proj_MatMul_transpose_a)) {

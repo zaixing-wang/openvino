@@ -1,0 +1,89 @@
+#include <cm/cm.h>
+#include <cm/cmtl.h>
+
+namespace KERNEL_NAME {
+
+extern "C" _GENX_MAIN_ void KERNEL_NAME(
+    int H,
+    int W,
+    SurfaceIndex query [[type("buffer_t")]],
+    SurfaceIndex output [[type("buffer_t")]]
+    ) {
+    // HEAD_DIMS:{embed_dims}
+    // WINDOW_SIZE:{window_size}
+    // SHIFT_SIZE:{shift_size}
+    uint batch_win_no = cm_group_id(1);
+    uint idx_in_win = cm_group_id(0);
+    uint x_in_win = idx_in_win % WINDOW_SIZE;
+    uint y_in_win = idx_in_win / WINDOW_SIZE;
+    uint h_pad_unit = (H + WINDOW_SIZE - 1) / WINDOW_SIZE;
+    uint w_pad_unit = (W + WINDOW_SIZE - 1) / WINDOW_SIZE;
+    uint hw_pad_unit = h_pad_unit * w_pad_unit;
+    uint cur_batch = batch_win_no / hw_pad_unit;
+    uint cur_hw_pad_unit = batch_win_no % hw_pad_unit;
+    uint cur_h_pad_unit = cur_hw_pad_unit / w_pad_unit;
+    uint cur_w_pad_unit = cur_hw_pad_unit % w_pad_unit;
+    auto cur_h = cur_h_pad_unit * WINDOW_SIZE + y_in_win;
+    auto cur_w = cur_w_pad_unit * WINDOW_SIZE + x_in_win;
+    uint dst_offset = (batch_win_no * WINDOW_SIZE * WINDOW_SIZE + idx_in_win) * HEAD_DIMS * sizeof(half);
+    vector<half, 128> data;
+    static_assert(HEAD_DIMS % 128 == 0, "HEAD_DIMS must be mutiple of 128");
+#if SHIFT_SIZE > 0
+    cur_h += SHIFT_SIZE;
+    cur_w += SHIFT_SIZE;
+    uint pad_r = w_pad_unit * WINDOW_SIZE - W;
+    uint pad_b = h_pad_unit * WINDOW_SIZE - H;
+
+    if (cur_h < H && cur_w < W) {
+        uint src_offset = (cur_batch * H * W + cur_h * W + cur_w) * HEAD_DIMS * sizeof(half);
+
+        #pragma unroll
+        for (uint i = 0; i < HEAD_DIMS; i += 128) {
+            data.format<int>() = cm_load<int, 128 / 2, DataSize::Default, CacheHint::Cached, CacheHint::Cached>(query, src_offset + i * sizeof(half));
+            cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+        }
+    } else if (cur_h < H + pad_b && cur_w < W + pad_r) {
+        data = 0;
+        #pragma unroll
+        for (uint i = 0; i < HEAD_DIMS; i += 128) {
+            cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+        }
+    } else {
+        if (cur_h >= H + pad_b)
+            cur_h -= H + pad_b;
+        if (cur_w >= W + pad_r)
+            cur_w -= W + pad_r;
+        if (cur_h >= H || cur_w >= W) {
+            data = 0;
+            #pragma unroll
+            for (uint i = 0; i < HEAD_DIMS; i += 128) {
+                cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+            }
+        } else {
+            uint src_offset = (cur_batch * H * W + cur_h * W + cur_w) * HEAD_DIMS * sizeof(half);
+            #pragma unroll
+            for (uint i = 0; i < HEAD_DIMS; i += 128) {
+                data.format<int>() = cm_load<int, 128 / 2, DataSize::Default, CacheHint::Cached, CacheHint::Cached>(query, src_offset + i * sizeof(half));
+                cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+            }
+        }
+    }
+#else
+    if (cur_h < H && cur_w < W) {
+        uint src_offset = (cur_batch * H * W + cur_h * W + cur_w) * HEAD_DIMS * sizeof(half);
+        #pragma unroll
+        for (uint i = 0; i < HEAD_DIMS; i += 128) {
+            data.format<int>() = cm_load<int, 128 /2, DataSize::Default, CacheHint::Cached, CacheHint::Cached>(query, src_offset + i * sizeof(half));
+            cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+        }
+    } else {
+        data = 0;
+        #pragma unroll
+        for (uint i = 0; i < HEAD_DIMS; i += 128) {
+            cm_store<int, 128 / 2, DataSize::Default, CacheHint::WriteBack, CacheHint::WriteBack>(output, dst_offset + i * sizeof(half), data.format<int>());
+        }
+    }
+#endif
+}
+
+}

@@ -1,0 +1,40 @@
+#include <cm/cm.h>
+#include <cm/cmtl.h>
+
+namespace KERNEL_NAME {
+
+extern "C" _GENX_MAIN_ void KERNEL_NAME(
+    int B,
+    int L,
+    half* query [[type("svmptr_t")]],
+    half* query_pos [[type("svmptr_t")]],
+    half* output [[type("svmptr_t")]]
+    ) {
+    // HEAD_DIMS:{embed_dims}
+    // WINDOW_SIZE:{window_size}
+    // SHIFT_SIZE:{shift_size}
+    uint l = cm_group_id(0) * 16;
+    uint b = cm_group_id(1);
+    if (l > L)
+        return;
+    static_assert(HEAD_DIMS % 32 == 0, "HEAD_DIMS must be mutiple of 32");
+    lsc::block_2d_desc<uint, 1, 16, 16> desc_query(reinterpret_cast<uint*>(query + b * L * HEAD_DIMS), L, HEAD_DIMS*sizeof(half) - 1, HEAD_DIMS*sizeof(half) - 1, 0, l);
+    lsc::block_2d_desc<uint, 1, 16, 16> desc_query_pos(reinterpret_cast<uint*>(query_pos + b * L * HEAD_DIMS), L, HEAD_DIMS*sizeof(half) - 1, HEAD_DIMS*sizeof(half) - 1, 0, l);
+    lsc::block_2d_desc<uint, 1, 8, 16> desc_output(reinterpret_cast<uint*>(output + b * L * HEAD_DIMS), L, HEAD_DIMS*sizeof(half) - 1, HEAD_DIMS*sizeof(half) - 1, 0, l);
+
+    #pragma unroll
+    for (uint i = 0; i < HEAD_DIMS; i += 32) {
+        matrix<half, 16, 32> q, pos, out;
+        cm_load<lsc::Normal>(q.format<uint>(), desc_query);
+        cm_load<lsc::Normal>(pos.format<uint>(), desc_query_pos);
+        out = q + pos;
+        cm_store<CacheHint::Uncached, CacheHint::WriteBack, 0, 0>(desc_output, out.select<8, 1, 32, 1>(0).format<uint>());
+        cm_store<CacheHint::Uncached, CacheHint::WriteBack, 0, 8>(desc_output, out.select<8, 1, 32, 1>(8).format<uint>());
+
+        desc_query.set_block_x(desc_query.get_block_x() + 16);
+        desc_query_pos.set_block_x(desc_query_pos.get_block_x() + 16);
+        desc_output.set_block_x(desc_output.get_block_x() + 16);
+    }
+}
+
+}

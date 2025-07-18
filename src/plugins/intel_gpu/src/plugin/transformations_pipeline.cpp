@@ -113,6 +113,7 @@
 #include "transformations/common_optimizations/weights_dequantize_to_fake_quantize.hpp"
 #include "transformations/common_optimizations/wrap_interpolate_into_transposes.hpp"
 #include "transformations/common_optimizations/constants_reduce.hpp"
+#include "transformations/common_optimizations/roll_fusion.hpp"
 #include "transformations/common_optimizations/multi_scale_deformable_attn_fusion.hpp"
 #include "transformations/control_flow/unroll_tensor_iterator.hpp"
 #include "transformations/convert_pooling_to_reduce.hpp"
@@ -190,6 +191,7 @@
 #include "openvino/op/roll.hpp"
 #include "openvino/op/shuffle_channels.hpp"
 #include "openvino/op/transpose.hpp"
+#include "transformations/utils/print_model.hpp"
 
 namespace {
 template<typename T>
@@ -479,6 +481,8 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                                                           store_original_precision_as_rt_attribute);
 
         manager.register_pass<ov::pass::CommonOptimizations>();
+        //manager.register_pass<ov::pass::RollFusion>();
+        //manager.register_pass<ov::pass::PrintModel>("dino_roll.cpp");
 
         // In the case of "input -> reshape -> convert -> multiply",
         // the "input -> reshape" subgraph is constant-folded in the above "CommonOptimizations"
