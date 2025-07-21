@@ -86,7 +86,7 @@ ov::pass::pattern::op::Predicate check_input(std::shared_ptr<Node> expected_inpu
             }
             
             return false;
-        },
+        }, 
         "check_input");
 }
 
@@ -227,12 +227,12 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
             auto attn_Concat_17_node = output_proj_pm->at(attn_Concat_17).get_node_shared_ptr();
             auto input_node = attn_Concat_17_node->input_value(0).get_node();
 
-            std::cout << "wzx debug hit in in" << __LINE__ << ", " << output_proj_root->get_friendly_name() << std::endl;
+            // std::cout << "wzx debug hit in in" << __LINE__ << ", " << output_proj_root->get_friendly_name() << std::endl;
 
             if (node_to_grid_sampler_pm.count(input_node)) {
                 const auto* grid_sampler_pm = node_to_grid_sampler_pm.at(input_node);
 
-                std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
+                // std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 //
                 // auto attn_value_input_node = grid_sampler_pm->at(attn_value_input);
                 // auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);
@@ -252,13 +252,13 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 // level_start_index = torch.cat((
                 //     spatial_shapes.new_zeros((1, )),  # (num_level)
                 //     spatial_shapes.prod(1).cumsum(0)[:-1]))
-                std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
+                // std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 auto [spatial_shapes_input_node, level_start_index_input_node] = retreive_spatial_shapes(attn_Concat_17_node);
-                std::cout << "wzx debug spatial friendly_name: " << spatial_shapes_input_node->get_friendly_name() << std::endl;
-                std::cout << "wzx debug level_start_index friendly_name: " << level_start_index_input_node->get_friendly_name() << std::endl;
+                // std::cout << "wzx debug spatial friendly_name: " << spatial_shapes_input_node->get_friendly_name() << std::endl;
+                // std::cout << "wzx debug level_start_index friendly_name: " << level_start_index_input_node->get_friendly_name() << std::endl;
 
                 //
-                std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
+                // std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 auto msda_node = std::make_shared<ov::op::internal::MSDA>(OutputVector{attn_value_input_node,
                                                                                     spatial_shapes_input_node,
                                                                                     level_start_index_input_node,
@@ -270,7 +270,7 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                     std::cout << "wzx debug msda output name" << msda_node->output(0).get_node()->get_friendly_name() << std::endl;
                 }
 
-                std::cout << "wzx debug hit in in" << __LINE__ << ", " << input_node->get_friendly_name() << std::endl;
+                // std::cout << "wzx debug hit in in" << __LINE__ << ", " << input_node->get_friendly_name() << std::endl;
             }            
         }
     };
