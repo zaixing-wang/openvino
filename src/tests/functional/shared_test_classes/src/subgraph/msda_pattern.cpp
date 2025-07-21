@@ -16,9 +16,12 @@
 #include "openvino/pass/manager.hpp"
 #include "ov_ops/msda.hpp"
 #include "transformations/common_optimizations/multi_scale_deformable_attn_fusion.hpp"
+#include <openvino/pass/serialize.hpp>
 
 namespace ov {
 namespace test {
+
+#define NUM_HEAD 1
 
 using namespace ov::opset10;
 
@@ -48,10 +51,15 @@ void MSDAPattern::generate_inputs(const std::vector<ov::Shape>& targetInputStati
 
         ov::Tensor tensor(dtype, shape);
 
-        if (i == 0 || i == 2) {
-            // value or attention_weights: 全部填 1.3
+        if (i == 0) {
+            // value
             auto* data = tensor.data<float>();
             std::fill(data, data + tensor.get_size(), 1.3f);
+
+        } else if (i == 2) {
+            // attention_weights
+            auto* data = tensor.data<float>();
+            std::fill(data, data + tensor.get_size(), 1.0f);
 
         } else if (i == 1) {
             // offset / sampling_locations: 用 linspace（递增）
@@ -117,25 +125,28 @@ std::shared_ptr<ov::Node> build_grid_sample_block(const std::shared_ptr<ov::Node
     return attn_Unsqueeze_31;
 }
 
-std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov::Node>& attn_Reshape,
-                                                       const std::shared_ptr<ov::Node>& attn_Sub) {
+std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov::Node>& attn_value,
+                                                       const std::shared_ptr<ov::Node>& attn_offsets) {
     using namespace ov::opset10;
+
+    auto attn_Mul = std::make_shared<Multiply>(attn_offsets, Constant::create(element::f32, Shape{1,1,1,1,1,1,}, {2}));
+    auto attn_Sub = std::make_shared<Add>(attn_Mul, Constant::create(element::f32, Shape{1,1,1,1,1,1,}, {-1}));
 
     // 0
     auto attn_Unsqueeze_31 =
-        build_grid_sample_block(attn_Reshape, attn_Sub, {0, 0}, {0, 16700}, {-1, 32, 100, 167}, {0}, {3});
+        build_grid_sample_block(attn_value, attn_Sub, {0, 0}, {0, 16700}, {-1, 32, 100, 167}, {0}, {3});
 
     // 1
     auto attn_Unsqueeze_32 =
-        build_grid_sample_block(attn_Reshape, attn_Sub, {0, 16700}, {0, 20900}, {-1, 32, 50, 84}, {1}, {3});
+        build_grid_sample_block(attn_value, attn_Sub, {0, 16700}, {0, 20900}, {-1, 32, 50, 84}, {1}, {3});
 
     // 2
     auto attn_Unsqueeze_33 =
-        build_grid_sample_block(attn_Reshape, attn_Sub, {0, 20900}, {0, 21950}, {-1, 32, 25, 42}, {2}, {3});
+        build_grid_sample_block(attn_value, attn_Sub, {0, 20900}, {0, 21950}, {-1, 32, 25, 42}, {2}, {3});
 
     // 3
     auto attn_Unsqueeze_34 =
-        build_grid_sample_block(attn_Reshape, attn_Sub, {0, 21950}, {0, 22223}, {-1, 32, 13, 21}, {3}, {3});
+        build_grid_sample_block(attn_value, attn_Sub, {0, 21950}, {0, 22223}, {-1, 32, 13, 21}, {3}, {3});
 
     auto attn_Concat_17 = std::make_shared<Concat>(
         ov::NodeVector{attn_Unsqueeze_31, attn_Unsqueeze_32, attn_Unsqueeze_33, attn_Unsqueeze_34},
@@ -211,16 +222,6 @@ std::shared_ptr<ov::Model> build_model_msda(ov::PartialShape value_shape,
     grid_sample_1->set_friendly_name("grid_sample_1");
     attn_Transpose_1->set_friendly_name("attn_output_proj_MatMul_transpose_a_1");
 
-    // auto grid_sample_2 = build_concated_grid_samplers(input_attn_value, input_attn_offsets);
-    // auto attn_Transpose_2 = build_attn_aggregate(input_attn_weight, grid_sample_2);
-    // grid_sample_2->set_friendly_name("grid_sample_2");
-    // attn_Transpose_2->set_friendly_name("attn_output_proj_MatMul_transpose_a_2");
-
-    // auto attn_output = std::make_shared<Add>(attn_Transpose_1, attn_Transpose_2);
-    // attn_output->set_friendly_name("attn_output");
-
-    // return std::make_shared<ov::Model>(NodeVector{attn_output},
-    //                                    ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
     return std::make_shared<ov::Model>(NodeVector{attn_Transpose_1},
                                        ParameterVector{input_attn_value, input_attn_offsets, input_attn_weight});
 }
@@ -248,6 +249,7 @@ void MSDAPattern::SetUp() {
     init_input_shapes({input_value_shape, input_offset_shape, input_weight_shape});
     targetDevice = ov::test::utils::DEVICE_GPU;
     function = build_model_msda(value_shape, offset_shape, weight_shape);
+    ov::serialize(function, "build_model_msda.xml", "build_model_msda.bin");
     // functionRefs = build_model_msda(shape_params);
     // function = functionRefs->clone();
     // ov::pass::Manager manager;
