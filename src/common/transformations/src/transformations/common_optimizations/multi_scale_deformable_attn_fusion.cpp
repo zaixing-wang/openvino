@@ -232,16 +232,16 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 //
                 // auto attn_value_input_node = grid_sampler_pm->at(attn_value_input);
-                // auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);
+                auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);
                 auto attn_weight_input_node = output_proj_pm->at(attn_weight_input);
 
                 OPENVINO_ASSERT(grid_sampler_pm->count(grid_sampler_block) > 0);
                 auto grid_sampler_block_node = ov::as_type_ptr<pattern::op::Block>(grid_sampler_pm->at(grid_sampler_block).get_node_shared_ptr());
                 OPENVINO_ASSERT(grid_sampler_block_node != nullptr);
                 auto attn_value_input_node = grid_sampler_block_node->get_inputs()[0].get_node_shared_ptr();
-                auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
+                // auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
                 std::cout << "wzx debug attn_value friendly_name: " << attn_value_input_node->get_friendly_name() << std::endl;
-                std::cout << "wzx debug attn_offsets friendly_name: " << attn_offsets_input_node->get_friendly_name() << std::endl;
+                // std::cout << "wzx debug attn_offsets friendly_name: " << attn_offsets_input_node->get_friendly_name() << std::endl;
                 std::cout << "wzx debug attn_weight friendly_name: " << attn_weight_input_node.get_node_shared_ptr()->get_friendly_name() << std::endl;
                 //
                 // # (num_level, 2)

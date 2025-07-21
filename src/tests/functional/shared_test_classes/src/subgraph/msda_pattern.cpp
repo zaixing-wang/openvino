@@ -131,6 +131,7 @@ std::shared_ptr<ov::Node> build_concated_grid_samplers(const std::shared_ptr<ov:
 
     auto attn_Mul = std::make_shared<Multiply>(attn_offsets, Constant::create(element::f32, Shape{1,1,1,1,1,1,}, {2}));
     auto attn_Sub = std::make_shared<Add>(attn_Mul, Constant::create(element::f32, Shape{1,1,1,1,1,1,}, {-1}));
+    attn_Sub->set_friendly_name("attn_Sub");
 
     // 0
     auto attn_Unsqueeze_31 =
