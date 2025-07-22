@@ -109,7 +109,8 @@ std::shared_ptr<ov::Node> grid_sample_block(const std::shared_ptr<ov::Node>& inp
 
     // auto attn_Unsqueeze_31 = optional<Squeeze, Reshape>({attn_GridSample, any_input()});
 
-    auto attn_Unsqueeze_31 = wrap_type<Reshape>({attn_GridSample, any_input()});
+    // auto attn_Unsqueeze_31 = wrap_type<Reshape>({attn_GridSample, any_input()});
+    auto attn_Unsqueeze_31 = wrap_type<Unsqueeze>({attn_GridSample, any_input()});
 
     // auto attn_Unsqueeze = wrap_type<Unsqueeze>({attn_GridSample, any_input()});
     // auto attn_Unsqueeze_31 = attn_Unsqueeze;
