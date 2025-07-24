@@ -5,7 +5,6 @@
 #include "subgraph_tests/lora_pattern.hpp"
 
 using namespace ov::test;
-
 namespace {
 
 const std::vector<size_t> M = { 1, 20, 256 };
@@ -30,5 +29,4 @@ INSTANTIATE_TEST_SUITE_P(smoke,
                                             ::testing::Values(64),
                                             ::testing::Values(25)),
                          LoraPatternConvolution::getTestCaseName);
-
 }  // namespace
