@@ -16,7 +16,6 @@
 #include "cpu_memory.h"
 #include "cpu_types.h"
 #include "graph_context.h"
-#include "kernels/scaled_attn/executor_pa.hpp"
 #include "memory_desc/cpu_memory_desc.h"
 #include "node.h"
 #include "nodes/common/blocked_desc_creator.h"
@@ -30,8 +29,13 @@
 #include "shape_inference/shape_inference_internal_dyn.hpp"
 #include "utils/general_utils.h"
 
-using namespace ov::Extensions::Cpu;
+#if defined(OPENVINO_ARCH_X86) || defined(OPENVINO_ARCH_X86_64) || defined(OPENVINO_ARCH_ARM64)
+#    include "kernels/scaled_attn/executor_pa.hpp"
+
 using namespace ov::Extensions::Cpu::XARCH;
+#endif
+
+using namespace ov::Extensions::Cpu;
 using namespace dnnl::impl;
 using namespace dnnl::impl::cpu::x64;
 
@@ -88,8 +92,7 @@ void PagedAttention::initSupportedPrimitiveDescriptors() {
         creatorsMap.at(LayoutType::ncsp)
             ->createSharedDesc(rtPrecision, getInputShapeAtPort(PagedAttentionExecutor::ID_V)));
 
-    CPU_NODE_ASSERT(orgInputNumber == 14 || orgInputNumber == 17,
-                    "The input number of PagedAttention should be 14 or 17.");
+    CPU_NODE_ASSERT(any_of(orgInputNumber, 14U, 17U), "The input number of PagedAttention should be 14 or 17.");
     // kvcache, float, []
     auto past_key_input_mem_precision = getOriginalInputPrecisionAtPort(PagedAttentionExecutor::ID_KCACHE);
     auto past_value_input_mem_precision = getOriginalInputPrecisionAtPort(PagedAttentionExecutor::ID_VCACHE);
@@ -210,7 +213,7 @@ void PagedAttention::createPrimitive() {
     auto cache = context->getParamsCache();
     auto result = cache->getOrCreate(key, builder);
     if (!result.first) {
-        THROW_CPU_NODE_ERR("AttentionExecutor creation fails with precision " + rtPrecision.to_string());
+        CPU_NODE_THROW("AttentionExecutor creation fails with precision " + rtPrecision.to_string());
     }
     m_executor = result.first;
 }
@@ -266,13 +269,13 @@ bool PagedAttention::isSupportedOperation(const std::shared_ptr<const ov::Node>&
     try {
         auto vCachePrecision = op->get_input_element_type(PagedAttentionExecutor::ID_VCACHE);
         auto kCachePrecision = op->get_input_element_type(PagedAttentionExecutor::ID_KCACHE);
-        if (one_of(vCachePrecision,
+        if (any_of(vCachePrecision,
                    ov::element::u4,
                    ov::element::u8,
                    ov::element::f32,
                    ov::element::f16,
                    ov::element::bf16)) {
-            if (!one_of(kCachePrecision,
+            if (none_of(kCachePrecision,
                         ov::element::u4,
                         ov::element::u8,
                         ov::element::f16,
