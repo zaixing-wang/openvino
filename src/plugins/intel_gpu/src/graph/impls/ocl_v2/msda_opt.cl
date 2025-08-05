@@ -153,14 +153,10 @@ KERNEL(multi_scale_deformable_attn)(
       for (int p_col = 0; p_col < num_point; ++p_col) {
         // const INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
         // const INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
-        const INPUT0_TYPE loc_w = (data_sampling_loc[data_loc_w_ptr] + 1.0) * 0.5;
-        const INPUT0_TYPE loc_h = (data_sampling_loc[data_loc_w_ptr + 1] + 1.0) * 0.5;
-        // INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
-        // INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
+        const INPUT0_TYPE loc_w = data_sampling_loc[data_loc_w_ptr];
+        const INPUT0_TYPE loc_h = data_sampling_loc[data_loc_w_ptr + 1];
         const INPUT0_TYPE weight = data_attn_weight[data_weight_ptr];
 
-        // loc_w = (loc_w + 1.0) * 0.5;
-        // loc_h = (loc_h + 1.0) * 0.5;
         const INPUT0_TYPE h_im = loc_h * spatial_h - 0.5;
         const INPUT0_TYPE w_im = loc_w * spatial_w - 0.5;
 

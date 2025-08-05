@@ -129,10 +129,14 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
 
     // Pattern 1
     auto attn_value_input = any_input();
-    auto attn_offsets_input = any_input();
-    auto grid_sampler_block = grid_sample_block(attn_value_input, attn_offsets_input);
 
-    // std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+    auto attn_offsets_input = any_input();
+    auto self_attn_Mul = wrap_type<Multiply>({attn_offsets_input, pattern::wrap_type<ov::op::v0::Constant>()});
+    auto self_attn_Sub = wrap_type<Add>({self_attn_Mul, pattern::wrap_type<ov::op::v0::Constant>()});
+
+    auto grid_sampler_block = grid_sample_block(attn_value_input, self_attn_Sub);
+
+    std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
     // Pattern 2
     auto attn_weight_input = any_input();
@@ -153,12 +157,12 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
     auto callback = [OV_CAPTURE_CPY_AND_THIS](const std::unordered_map<std::shared_ptr<Node>, std::vector<PatternValueMap>>& matches) {
         // std::cout << "wzx debug return directly" << std::endl;
         // return;
-        // std::cout << "wzx debug hit in in" << __LINE__ << ", matches.size()=" << matches.size() << std::endl;
+        std::cout << "wzx debug hit in in" << __LINE__ << ", matches.size()=" << matches.size() << std::endl;
         if (matches.size() != 2) {
             return;
         }
 
-        //std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
+        std::cout << "wzx debug hit in in" << __LINE__ << std::endl;
 
         std::unordered_map<Node*, const PatternValueMap*> node_to_output_proj_pm;
         for (const auto& pm : matches.at(attn_output_proj_MatMul_transpose_a)) {
@@ -236,16 +240,16 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 // std::cout << "wzx debug hit in in" << __LINE__ << ", " << grid_sampler_pm << std::endl;
                 //
                 // auto attn_value_input_node = grid_sampler_pm->at(attn_value_input);
-                // auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);
+                auto attn_offsets_input_node = grid_sampler_pm->at(attn_offsets_input);
                 auto attn_weight_input_node = output_proj_pm->at(attn_weight_input);
 
                 OPENVINO_ASSERT(grid_sampler_pm->count(grid_sampler_block) > 0);
                 auto grid_sampler_block_node = ov::as_type_ptr<pattern::op::Block>(grid_sampler_pm->at(grid_sampler_block).get_node_shared_ptr());
                 OPENVINO_ASSERT(grid_sampler_block_node != nullptr);
                 auto attn_value_input_node = grid_sampler_block_node->get_inputs()[0].get_node_shared_ptr();
-                auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
+                // auto attn_offsets_input_node = grid_sampler_block_node->get_inputs()[1].get_node_shared_ptr();
                 std::cout << "wzx debug attn_value friendly_name: " << attn_value_input_node->get_friendly_name() << std::endl;
-                std::cout << "wzx debug attn_offsets friendly_name: " << attn_offsets_input_node->get_friendly_name() << std::endl;
+                // std::cout << "wzx debug attn_offsets friendly_name: " << attn_offsets_input_node->get_friendly_name() << std::endl;
                 std::cout << "wzx debug attn_weight friendly_name: " << attn_weight_input_node.get_node_shared_ptr()->get_friendly_name() << std::endl;
                 //
                 // # (num_level, 2)
@@ -268,7 +272,6 @@ MultiScaleDeformableAttnFusion::MultiScaleDeformableAttnFusion() : MultiMatcher(
                 auto consumers = output_proj_root->get_output_target_inputs(0);
                 for (auto consumer: consumers) {
                     consumer.replace_source_output(msda_node);
-                    std::cout << "wzx debug msda output name" << msda_node->output(0).get_node()->get_friendly_name() << std::endl;
                 }
 
                 // std::cout << "wzx debug hit in in" << __LINE__ << ", " << input_node->get_friendly_name() << std::endl;
