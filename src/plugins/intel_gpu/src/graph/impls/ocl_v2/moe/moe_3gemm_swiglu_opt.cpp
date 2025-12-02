@@ -535,7 +535,7 @@ public:
         dnnl::memory scale;
         dnnl::memory zp;
         int ic, oc, ic_group_size;
-    };
+    }p;
 
     // expert_mask result in cpu side
     struct expert_mask_cpu {

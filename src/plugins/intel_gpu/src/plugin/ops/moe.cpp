@@ -6,6 +6,7 @@
 #include "intel_gpu/op/moe_compressed.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/op/moe_3gemm_fused_compressed.hpp"
+#include "intel_gpu/op/moe_3gemm_fused_compressed_otd.hpp"
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/primitives/moe_3gemm_fused_compressed.hpp"
@@ -22,6 +23,7 @@ namespace ov {
 namespace op {
 namespace internal {
 using MOE3GemmFusedCompressed = ov::intel_gpu::op::MOE3GemmFusedCompressed;
+using MOE3GemmFusedCompressedOTD = ov::intel_gpu::op::MOE3GemmFusedCompressedOTD;
 using MOECompressed = ov::intel_gpu::op::MOECompressed;
 }  // namespace internal
 }  // namespace op
@@ -29,6 +31,17 @@ using MOECompressed = ov::intel_gpu::op::MOECompressed;
 
 namespace ov::intel_gpu {
 using namespace cldnn;
+
+static void CreateMOE3GemmFusedCompressedOTDOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressedOTD>& op) {
+    auto inputs = p.GetInputInfo(op);
+    const auto& config = op->get_config();
+    validate_inputs_count(op, {2});
+
+    const std::string layerName = layer_type_name_ID(op);
+    const cldnn::moe_3gemm_fused_compressed_otd moe_otd(layerName, inputs, config, attrs);
+
+    p.add_primitive(*op, moe_otd);
+}
 
 static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
     auto inputs = p.GetInputInfo(op);
