@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "fuse_moe_3gemm_compressed_od.hpp"
+#include "fuse_moe_3gemm_compressed_otd.hpp"
 
 #include <memory>
 
@@ -71,15 +71,15 @@ FuseMOE3GemmCompressedOTD::FuseMOE3GemmCompressedOTD() {
         OutputVector args(2);
         args[0] = pattern_map.at(hidden_state_m);
         args[1] = pattern_map.at(routers_m);
-        auto gate_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_wei_m)).get_node_shared_ptr();
-        auto gate_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_scale_m)).get_node_shared_ptr();
-        auto gate_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_zp_m)).get_node_shared_ptr();
-        auto up_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_wei_m)).get_node_shared_ptr();
-        auto up_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_scale_m)).get_node_shared_ptr();
-        auto up_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_zp_m)).get_node_shared_ptr();
-        auto down_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_wei_m)).get_node_shared_ptr();
-        auto down_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_scale_m)).get_node_shared_ptr();
-        auto down_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_zp_m)).get_node_shared_ptr();
+        auto gate_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_wei_m).get_node_shared_ptr());
+        auto gate_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_scale_m).get_node_shared_ptr());
+        auto gate_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_zp_m).get_node_shared_ptr());
+        auto up_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_wei_m).get_node_shared_ptr());
+        auto up_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_scale_m).get_node_shared_ptr());
+        auto up_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_zp_m).get_node_shared_ptr());
+        auto down_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_wei_m).get_node_shared_ptr());
+        auto down_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_scale_m).get_node_shared_ptr());
+        auto down_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_zp_m).get_node_shared_ptr());
         auto moe_3gemm_fused_compressed = std::make_shared<ov::intel_gpu::op::MOE3GemmFusedCompressedOTD>(args, moe_compressed->get_config(),
                                                                                                         gate_w, gate_s, gate_z,
                                                                                                         up_w, up_s, up_z,

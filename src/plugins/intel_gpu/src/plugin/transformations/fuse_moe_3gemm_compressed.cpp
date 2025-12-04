@@ -103,7 +103,6 @@ FuseMOE3GemmCompressed::FuseMOE3GemmCompressed() {
         args[8] = pattern_map.at(down_wei_m);
         args[9] = pattern_map.at(down_scale_m);
         args[10] = pattern_map.at(down_zp_m);
-
         auto moe_3gemm_fused_compressed = std::make_shared<ov::intel_gpu::op::MOE3GemmFusedCompressed>(args, moe_compressed->get_config());
         moe_3gemm_fused_compressed->set_friendly_name(moe_compressed->get_friendly_name());
         ov::copy_runtime_info(moe_compressed, moe_3gemm_fused_compressed);

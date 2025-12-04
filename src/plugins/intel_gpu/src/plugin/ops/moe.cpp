@@ -10,6 +10,7 @@
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/primitives/moe_3gemm_fused_compressed.hpp"
+#include "intel_gpu/primitives/moe_3gemm_fused_compressed_otd.hpp"
 #include "intel_gpu/primitives/moe_gemm.hpp"
 #include "intel_gpu/primitives/moe_mask_gen.hpp"
 #include <intel_gpu/primitives/moe_scatter_reduction.hpp>
@@ -32,13 +33,52 @@ using MOECompressed = ov::intel_gpu::op::MOECompressed;
 namespace ov::intel_gpu {
 using namespace cldnn;
 
+
+
+static cldnn::memory::ptr pre_allocate_weights(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressedOTD>& op) {
+    auto size = get_weights_size(op);
+    auto layout = cldnn::layout({1, 1, 1, static_cast<ov::Dimension::value_type>(size)}, ov::element::i8, cldnn::format::bfyx);
+    auto alloc_type = p.get_engine().get_preferred_memory_allocation_type(false);
+    auto mem = p.get_engine().allocate_memory(layout, alloc_type, false);
+    return mem;
+}
+
+static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressedOTD>& op, cldnn::moe_weights& wei_mem) {
+    auto& stream = p.get_engine().get_service_stream();
+    auto fill = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem) {
+        if (!mem)
+            return;
+        ov::Shape const_shape = op->get_shape();
+        auto constFormat = cldnn::format::get_default_format(const_shape.size());
+        cldnn::data_types out_dtype = cldnn::element_type_to_data_type(op->get_output_element_type(0));
+        auto layout = cldnn::layout(const_shape, out_dtype, constFormat);
+        auto data = op->get_data_ptr<uint8_t>();
+        mem->copy_from(stream, data, 0, 0, layout.bytes_count(), true);
+    };
+
+    fill(op->get_weights().gates[0], wei_mem.gate_w);                                                 
+    fill(op->get_weights().gates[1], wei_mem.gate_s);                                                 
+    fill(op->get_weights().gates[2], wei_mem.gate_z);                                                 
+    fill(op->get_weights().ups[0], wei_mem.up_w);                                                 
+    fill(op->get_weights().ups[1], wei_mem.up_s);                                                 
+    fill(op->get_weights().ups[2], wei_mem.up_z);                                                 
+    fill(op->get_weights().downs[0], wei_mem.down_w);
+    fill(op->get_weights().downs[1], wei_mem.down_s);
+    fill(op->get_weights().downs[2], wei_mem.down_z);
+}
+
+
+// TODO: otd primitive impl, memory management, etc.
 static void CreateMOE3GemmFusedCompressedOTDOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressedOTD>& op) {
     auto inputs = p.GetInputInfo(op);
-    const auto& config = op->get_config();
     validate_inputs_count(op, {2});
 
     const std::string layerName = layer_type_name_ID(op);
-    const cldnn::moe_3gemm_fused_compressed_otd moe_otd(layerName, inputs, config, attrs);
+    auto base_mem = pre_allocate_weights(p, op);
+    cldnn::moe_weights moe_w;
+    create_weights_memory(p.get_engine(), base_mem, moe_w, op);
+    fill_weights_memory(p, op, moe_w);
+    const cldnn::moe_3gemm_fused_compressed_otd moe_otd(layerName, inputs, op, base_mem, moe_w);
 
     p.add_primitive(*op, moe_otd);
 }
@@ -227,6 +267,7 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         p.add_primitive(*op, moe_scatter_reduce_prim);
     }
 }
+REGISTER_FACTORY_IMPL(internal, MOE3GemmFusedCompressedOTD);
 REGISTER_FACTORY_IMPL(internal, MOE3GemmFusedCompressed);
 REGISTER_FACTORY_IMPL(internal, MOECompressed);
 

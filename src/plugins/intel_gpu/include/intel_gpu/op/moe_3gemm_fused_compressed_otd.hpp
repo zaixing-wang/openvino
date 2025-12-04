@@ -24,7 +24,8 @@ public:
                       std::shared_ptr<ov::op::v0::Constant> up_z,
                       std::shared_ptr<ov::op::v0::Constant> down_w,
                       std::shared_ptr<ov::op::v0::Constant> down_s,
-                      std::shared_ptr<ov::op::v0::Constant> down_z) {
+                      std::shared_ptr<ov::op::v0::Constant> down_z
+                     ) {
             gates[0] = gate_w;
             gates[1] = gate_s;
             gates[2] = gate_z;
@@ -34,15 +35,21 @@ public:
             downs[0] = down_w;
             downs[1] = down_s;
             downs[2] = down_z;
+            weight_type = gate_w->get_element_type();
+            scale_type = gate_s->get_element_type();
+            zp_type = gate_z->get_element_type();
         };
         std::array<std::shared_ptr<ov::op::v0::Constant>, 3> gates;
         std::array<std::shared_ptr<ov::op::v0::Constant>, 3> ups;
         std::array<std::shared_ptr<ov::op::v0::Constant>, 3> downs;
+        ov::element::Type weight_type{};
+        ov::element::Type scale_type{};
+        ov::element::Type zp_type{};
     };
 
     MOE3GemmFusedCompressedOTD() = default;
     MOE3GemmFusedCompressedOTD(const OutputVector& args,
-                               const MOECompressed::Config config,
+                               const MOE3GemmFusedCompressedOTD::Config config,
                                std::shared_ptr<ov::op::v0::Constant> gate_w,
                                std::shared_ptr<ov::op::v0::Constant> gate_s,
                                std::shared_ptr<ov::op::v0::Constant> gate_z,
@@ -55,10 +62,11 @@ public:
         : MOE3GemmFusedCompressed(args, config),
           m_weights(gate_w, gate_s, gate_z, up_w, up_s, up_z, down_w, down_s, down_z){};
 
-    std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& new_args) const override;
+    const ExpertWeights& get_weights() const { return m_weights; }
 
 private:
     ExpertWeights m_weights;
+    Config m_config;
 };
 
 }  // namespace ov::intel_gpu::op
