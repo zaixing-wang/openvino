@@ -83,17 +83,6 @@ TEST(moe_3gemm_compressed_gpu, moe_accuracy_test) {
     topology.add(input_layout("hidden_states", hidden_states->get_layout()));
     topology.add(input_layout("routing_weights", routing_weights->get_layout()));
 
-    // Add weight data
-    topology.add(data("w0_weight", w0_weight));
-    topology.add(data("w0_scale", w0_scale));
-    topology.add(data("w0_zp", w0_zp));
-    topology.add(data("w1_weight", w1_weight));
-    topology.add(data("w1_scale", w1_scale));
-    topology.add(data("w1_zp", w1_zp));
-    topology.add(data("w2_weight", w2_weight));
-    topology.add(data("w2_scale", w2_scale));
-    topology.add(data("w2_zp", w2_zp));
-
     // Create MOE3GemmFusedCompressed config
     cldnn::MOE3GemmFusedCompressed::Config config;
     config.hidden_size = hidden_size;
@@ -103,20 +92,22 @@ TEST(moe_3gemm_compressed_gpu, moe_accuracy_test) {
     config.group_size = group_size;
     config.out_type = data_types::f16;
 
+    moe_weights weights;
+    weights.gate_w = w0_weight;
+    weights.gate_s = w0_scale;
+    weights.gate_z = w0_zp;
+    weights.up_w = w1_weight;
+    weights.up_s = w1_scale;
+    weights.up_z = w1_zp;
+    weights.down_w = w2_weight;
+    weights.down_s = w2_scale;
+    weights.down_z = w2_zp;
     // Create MOECompressed primitive
     auto moe_prim = moe_3gemm_fused_compressed("moe_3gemm_fused_compressed",
                                          {input_info("hidden_states"),
-                                          input_info("routing_weights"),
-                                          input_info("w0_weight"),
-                                          input_info("w0_scale"),
-                                          input_info("w0_zp"),
-                                          input_info("w1_weight"),
-                                          input_info("w1_scale"),
-                                          input_info("w1_zp"),
-                                          input_info("w2_weight"),
-                                          input_info("w2_scale"),
-                                          input_info("w2_zp")},
-                                         config);
+                                          input_info("routing_weights")},
+                                         config,
+                                        weights);
 
     topology.add(moe_prim);
 

@@ -735,19 +735,29 @@ public:
         }
 
         // gate
-        scratch.moe_fusion_wei_addr.weight[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_0));
-        scratch.moe_fusion_wei_addr.scale[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_0));
-        scratch.moe_fusion_wei_addr.zp[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_0));
+        // scratch.moe_fusion_wei_addr.weight[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_0));
+        // scratch.moe_fusion_wei_addr.scale[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_0));
+        // scratch.moe_fusion_wei_addr.zp[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_0));
 
-        // up
-        scratch.moe_fusion_wei_addr.weight[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_1));
-        scratch.moe_fusion_wei_addr.scale[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_1));
-        scratch.moe_fusion_wei_addr.zp[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_1));
+        // // up
+        // scratch.moe_fusion_wei_addr.weight[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_1));
+        // scratch.moe_fusion_wei_addr.scale[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_1));
+        // scratch.moe_fusion_wei_addr.zp[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_1));
 
-        // down
-        scratch.moe_fusion_wei_addr.weight[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_2));
-        scratch.moe_fusion_wei_addr.scale[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_2));
-        scratch.moe_fusion_wei_addr.zp[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_2));
+        // // down
+        // scratch.moe_fusion_wei_addr.weight[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_2));
+        // scratch.moe_fusion_wei_addr.scale[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_2));
+        // scratch.moe_fusion_wei_addr.zp[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_2));
+
+        scratch.moe_fusion_wei_addr.weight[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_w;
+        scratch.moe_fusion_wei_addr.scale[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_s;
+        scratch.moe_fusion_wei_addr.zp[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_z;
+        scratch.moe_fusion_wei_addr.weight[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_w;
+        scratch.moe_fusion_wei_addr.scale[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_s;
+        scratch.moe_fusion_wei_addr.zp[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_z;
+        scratch.moe_fusion_wei_addr.weight[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_w;
+        scratch.moe_fusion_wei_addr.scale[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_s;
+        scratch.moe_fusion_wei_addr.zp[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_z;
     }
 
     void get_expert_mask_from_gpu(const MOE3GemmFusedCompressed::Config& config, memory::ptr mem, stream& stream, expert_mask_cpu& expert_mask) {
@@ -950,7 +960,7 @@ public:
         auto kernel = std::make_shared<onednn_kernel>();
 
         // gate
-        auto gate_weight_layout_dt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_0))->get_layout().data_type);
+        auto gate_weight_layout_dt = convert_data_type(instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_w->get_layout().data_type);
         kernel->gate = onednn_linear::create(dnn_stream.get_engine(),
                                              hidden_states_layout_dt,
                                              gate_weight_layout_dt,
@@ -964,7 +974,7 @@ public:
                                              dnnl_weights[0].zp);
 
         // up
-        auto up_weight_layout_dt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_1))->get_layout().data_type);
+        auto up_weight_layout_dt = convert_data_type(instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_w->get_layout().data_type);
         kernel->up = onednn_linear::create(dnn_stream.get_engine(),
                                            hidden_states_layout_dt,
                                            up_weight_layout_dt,
@@ -978,7 +988,7 @@ public:
                                            dnnl_weights[1].zp);
 
         // down
-        auto down_weight_layout_dt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_2))->get_layout().data_type);
+        auto down_weight_layout_dt = convert_data_type(instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_w->get_layout().data_type);
         kernel->down = onednn_linear::create(dnn_stream.get_engine(),
                                              hidden_states_layout_dt,
                                              down_weight_layout_dt,

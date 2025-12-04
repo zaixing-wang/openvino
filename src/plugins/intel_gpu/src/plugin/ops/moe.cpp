@@ -6,11 +6,9 @@
 #include "intel_gpu/op/moe_compressed.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/op/moe_3gemm_fused_compressed.hpp"
-#include "intel_gpu/op/moe_3gemm_fused_compressed_otd.hpp"
 #include "intel_gpu/plugin/common_utils.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/primitives/moe_3gemm_fused_compressed.hpp"
-#include "intel_gpu/primitives/moe_3gemm_fused_compressed_otd.hpp"
 #include "intel_gpu/primitives/moe_gemm.hpp"
 #include "intel_gpu/primitives/moe_mask_gen.hpp"
 #include <intel_gpu/primitives/moe_scatter_reduction.hpp>
@@ -24,7 +22,6 @@ namespace ov {
 namespace op {
 namespace internal {
 using MOE3GemmFusedCompressed = ov::intel_gpu::op::MOE3GemmFusedCompressed;
-using MOE3GemmFusedCompressedOTD = ov::intel_gpu::op::MOE3GemmFusedCompressedOTD;
 using MOECompressed = ov::intel_gpu::op::MOECompressed;
 }  // namespace internal
 }  // namespace op
@@ -33,9 +30,18 @@ using MOECompressed = ov::intel_gpu::op::MOECompressed;
 namespace ov::intel_gpu {
 using namespace cldnn;
 
+static size_t get_weights_size(const std::shared_ptr<MOE3GemmFusedCompressed>& op) {
+    size_t weights_size = 0;
+    for (int i = 0; i < 3; i++)
+        weights_size += op->get_weights().gates[i]->get_byte_size();
+    for (int i = 0; i < 3; i++)
+        weights_size += op->get_weights().ups[i]->get_byte_size();
+    for (int i = 0; i < 3; i++)
+        weights_size += op->get_weights().downs[i]->get_byte_size();
+    return weights_size;
+}
 
-
-static cldnn::memory::ptr pre_allocate_weights(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressedOTD>& op) {
+static cldnn::memory::ptr pre_allocate_weights(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressed>& op) {
     auto size = get_weights_size(op);
     auto layout = cldnn::layout({1, 1, 1, static_cast<ov::Dimension::value_type>(size)}, ov::element::i8, cldnn::format::bfyx);
     auto alloc_type = p.get_engine().get_preferred_memory_allocation_type(false);
@@ -43,7 +49,33 @@ static cldnn::memory::ptr pre_allocate_weights(ProgramBuilder& p, const std::sha
     return mem;
 }
 
-static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressedOTD>& op, cldnn::moe_weights& wei_mem) {
+static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base, cldnn::moe_weights& pw, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
+    size_t weights_offset = 0;
+    auto weights = op->get_weights();
+    auto config = op->get_config();
+    auto alloc = [&] (ov::Shape shape, ov::element::Type type) {
+        auto format = cldnn::format::get_default_format(shape.size());
+        cldnn::data_types out_dtype = cldnn::element_type_to_data_type(type);
+        auto layout = cldnn::layout(shape, out_dtype, format);
+        auto mem = engine.create_subbuffer(*base, layout, weights_offset);
+        weights_offset += layout.bytes_count();
+        return mem;
+    };
+    const size_t group_num = config.hidden_size / config.group_size;
+    const size_t group_num2 = config.inter_size / config.group_size;
+
+    pw.gate_w = alloc({config.num_expert * config.inter_size * group_num * config.group_size}, weights.weight_type);
+    pw.gate_s = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.scale_type);
+    pw.gate_z = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.zp_type);
+    pw.up_w = alloc({config.num_expert * config.inter_size * group_num * config.group_size}, weights.weight_type);
+    pw.up_s = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.scale_type);
+    pw.up_z = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.zp_type);
+    pw.down_w = alloc({config.num_expert * config.hidden_size * group_num2 * config.group_size}, weights.weight_type);
+    pw.down_s = alloc({config.num_expert * config.hidden_size * group_num2 * 1}, weights.scale_type);
+    pw.down_z = alloc({config.num_expert * config.hidden_size * group_num2 * 1}, weights.zp_type);
+}
+
+static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem) {
     auto& stream = p.get_engine().get_service_stream();
     auto fill = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem) {
         if (!mem)
@@ -67,10 +99,12 @@ static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3Gem
     fill(op->get_weights().downs[2], wei_mem.down_z);
 }
 
-
-// TODO: otd primitive impl, memory management, etc.
-static void CreateMOE3GemmFusedCompressedOTDOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressedOTD>& op) {
+static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
     auto inputs = p.GetInputInfo(op);
+    const auto& config = op->get_config();
+    ///   0: hidden_states - input tensor with hidden representations
+    ///   1: routing_weights - [num_seq, num_experts] routing weights for all expertsts,
+    ///                  shape [num_experts, hidden_size, group_num, 1]
     validate_inputs_count(op, {2});
 
     const std::string layerName = layer_type_name_ID(op);
@@ -78,39 +112,7 @@ static void CreateMOE3GemmFusedCompressedOTDOp(ProgramBuilder& p, const std::sha
     cldnn::moe_weights moe_w;
     create_weights_memory(p.get_engine(), base_mem, moe_w, op);
     fill_weights_memory(p, op, moe_w);
-    const cldnn::moe_3gemm_fused_compressed_otd moe_otd(layerName, inputs, op, base_mem, moe_w);
-
-    p.add_primitive(*op, moe_otd);
-}
-
-static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
-    auto inputs = p.GetInputInfo(op);
-    const auto& config = op->get_config();
-    ///   0: hidden_states - input tensor with hidden representations
-    ///   1: routing_weights - [num_seq, num_experts] routing weights for all experts
-    ///   2: w0_weight - expert weights for first projection,
-    ///                  shape [num_experts, inter_size, group_num, group_size]
-    ///   3: w0_scale - expert scale for first projection for compressed experts,
-    ///                  shape [num_experts, inter_size, group_num, 1]
-    ///   4: w0_zp - expert zp for first projection for compressed experts,
-    ///                  shape [num_experts, inter_size, group_num, 1]
-    ///   5: w1_weight - expert weights for second projection,
-    ///                  shape [num_experts, inter_size, group_num, group_size]
-    ///   6: w1_scale - expert scale for second projection for compressed experts,
-    ///                  shape [num_experts, inter_size, group_num, 1]
-    ///   7: w1_zp - expert zp for second projection for compressed experts,
-    ///                  shape [num_experts, inter_size, group_num, 1]
-    ///   8: w2_weight - expert weights for final projection,
-    ///                  shape [num_experts, hidden_size, group_num, group_size]
-    ///   9: w2_scale - expert scale for final projection for compressed experts,
-    ///                  shape [num_experts, hidden_size, group_num, 1]
-    ///   10: w2_zp - expert zp for final projection for compressed experts,
-    ///                  shape [num_experts, hidden_size, group_num, 1]
-    validate_inputs_count(op, {11});
-
-    const std::string layerName = layer_type_name_ID(op);
-    const cldnn::moe_3gemm_fused_compressed moe(layerName, inputs, config);
-
+    const cldnn::moe_3gemm_fused_compressed moe(layerName, inputs, config, moe_w);
     p.add_primitive(*op, moe);
 }
 
@@ -267,7 +269,7 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         p.add_primitive(*op, moe_scatter_reduce_prim);
     }
 }
-REGISTER_FACTORY_IMPL(internal, MOE3GemmFusedCompressedOTD);
+
 REGISTER_FACTORY_IMPL(internal, MOE3GemmFusedCompressed);
 REGISTER_FACTORY_IMPL(internal, MOECompressed);
 

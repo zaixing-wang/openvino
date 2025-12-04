@@ -20,16 +20,7 @@ namespace ov::intel_gpu::ocl {
 //  mlp_down: 2
 enum class MOEInputIndex : uint8_t {
     HIDDEN_STATES = 0,
-    ROUTING_WEIGHTS = 1,
-    WEIGHT_0 = 2,
-    SCALE_0 = 3,
-    ZP_0 = 4,
-    WEIGHT_1 = 5,
-    SCALE_1 = 6,
-    ZP_1 = 7,
-    WEIGHT_2 = 8,
-    SCALE_2 = 9,
-    ZP_2 = 10
+    ROUTING_WEIGHTS = 1
 };
 
 struct moe_3gemm_swiglu_opt : public ImplementationManager {
@@ -53,33 +44,6 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
         }
 
         if (!one_of(in0_layout.data_type, supported_types) || !one_of(out_layout.data_type, supported_types)) {
-            return false;
-        }
-
-        // Only support weight: u4
-        static constexpr std::array supported_wei_type = {
-            ov::element::u4,
-        };
-        const auto& wei_layout = node.get_input_layout(static_cast<size_t>(MOEInputIndex::WEIGHT_0));
-        if (!one_of(wei_layout.data_type, supported_wei_type)) {
-            return false;
-        }
-
-        // Only support scale: f16
-        static constexpr std::array supported_scale_type = {
-            ov::element::f16,
-        };
-        const auto& scale_layout = node.get_input_layout(static_cast<size_t>(MOEInputIndex::SCALE_0));
-        if (!one_of(scale_layout.data_type, supported_scale_type)) {
-            return false;
-        }
-
-        // Only support zp: u4
-        static constexpr std::array supported_zp_type = {
-            ov::element::u4,
-        };
-        const auto& zp_layout = node.get_input_layout(static_cast<size_t>(MOEInputIndex::ZP_0));
-        if (!one_of(zp_layout.data_type, supported_zp_type)) {
             return false;
         }
 

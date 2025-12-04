@@ -91,19 +91,22 @@ FuseMOE3GemmCompressed::FuseMOE3GemmCompressed() {
         if (!moe_compressed || transformation_callback(moe_compressed)) {
             return false;
         }
-        OutputVector args(11);
+        OutputVector args(2);
         args[0] = pattern_map.at(hidden_state_m);
         args[1] = pattern_map.at(router_matmul_m);
-        args[2] = pattern_map.at(gate_wei_m);
-        args[3] = pattern_map.at(gate_scale_m);
-        args[4] = pattern_map.at(gate_zp_m);
-        args[5] = pattern_map.at(up_wei_m);
-        args[6] = pattern_map.at(up_scale_m);
-        args[7] = pattern_map.at(up_zp_m);
-        args[8] = pattern_map.at(down_wei_m);
-        args[9] = pattern_map.at(down_scale_m);
-        args[10] = pattern_map.at(down_zp_m);
+        auto gate_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_wei_m).get_node_shared_ptr());
+        auto gate_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_scale_m).get_node_shared_ptr());
+        auto gate_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(gate_zp_m).get_node_shared_ptr());
+        auto up_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_wei_m).get_node_shared_ptr());
+        auto up_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_scale_m).get_node_shared_ptr());
+        auto up_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(up_zp_m).get_node_shared_ptr());
+        auto down_w = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_wei_m).get_node_shared_ptr());
+        auto down_s = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_scale_m).get_node_shared_ptr());
+        auto down_z = ov::as_type_ptr<ov::op::v0::Constant>(pattern_map.at(down_zp_m).get_node_shared_ptr());
         auto moe_3gemm_fused_compressed = std::make_shared<ov::intel_gpu::op::MOE3GemmFusedCompressed>(args, moe_compressed->get_config());
+        moe_3gemm_fused_compressed->initWeights(gate_w, gate_s, gate_z,
+                                                        up_w, up_s, up_z,
+                                                        down_w, down_s, down_z);
         moe_3gemm_fused_compressed->set_friendly_name(moe_compressed->get_friendly_name());
         ov::copy_runtime_info(moe_compressed, moe_3gemm_fused_compressed);
         ov::replace_node(moe_compressed, moe_3gemm_fused_compressed);
