@@ -90,7 +90,7 @@ TEST(moe_3gemm_compressed_gpu, moe_accuracy_test) {
     config.num_expert = num_experts;
     config.top_k = top_k;
     config.group_size = group_size;
-    config.out_type = data_types::f16
+    config.out_type = data_types::f16;
 
     moe_weights weights;
     weights.gate_w = w0_weight;

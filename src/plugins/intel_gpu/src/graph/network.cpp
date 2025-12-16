@@ -674,7 +674,7 @@ void network::reset_output_remote_memory_ptrs() {
 void network::add_to_exec_order(const primitive_id& id) {
     auto inst = get_primitive(id);
     _exec_order.push_back(inst);
-}
+} 
 
 std::map<primitive_id, network_output> network::execute(const std::vector<event::ptr>& dependencies) {
     OV_ITT_SCOPED_TASK(ov::intel_gpu::itt::domains::intel_gpu_plugin, "NetworkImpl::Execute");
