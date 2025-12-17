@@ -517,14 +517,6 @@ protected:
 
 dnnl::memory convert2dnnl(const memory::ptr& ptr, const std::vector<int64_t>& dim, dnnl::memory::format_tag tag, int64_t offset = 0) {
     OV_ITT_SCOPED_TASK(ov::intel_gpu::itt::domains::intel_gpu_plugin, openvino::itt::handle("convert2dnnl"));
-    // std::cout << "wzx debug onednn offset:" << offset << std::endl;
-    std::cout << "wzx debug onednn dim:";
-    for (auto d : dim) {
-        std::cout << d << ",";
-    }
-    std::cout << std::endl;
-    // std::cout << "wzx debug onednn tag:" << static_cast<int>(tag) << std::endl;
-    // std::cout << "wzx debug layout:" << ptr->get_layout().to_string() << std::endl;
     return ptr->get_onednn_memory(dnnl::memory::desc(dnnl::memory::dims(dim), convert_data_type(ptr->get_layout().data_type), tag), offset);
 }
 
@@ -543,7 +535,7 @@ public:
         dnnl::memory scale;
         dnnl::memory zp;
         int ic, oc, ic_group_size;
-    }p;
+    };
 
     // expert_mask result in cpu side
     struct expert_mask_cpu {
@@ -627,19 +619,10 @@ public:
     void init_dnnl_weights(const std::shared_ptr<const moe_3gemm_fused_compressed>& cur_moe,
                            cldnn::engine& engine,
                            const struct moe_fusion_weights_base_addr& moe_fusion_wei_addr) {
-        std::cout << "wzx debug start init_dnnl_weights" << std::endl;
         if (_dnnl_weights.size() == cur_moe->_config.num_expert)
             return;
         init(cur_moe);
-        std::cout << "wzx debug gate_w addr" << moe_fusion_wei_addr.weight[0]->buffer_ptr() << std::endl;
-        std::cout << "gate_s - gate_w addr:" << (char*)moe_fusion_wei_addr.scale[0]->buffer_ptr() - (char*)moe_fusion_wei_addr.weight[0]->buffer_ptr() << std::endl;
-        std::cout << "gate_zp - gate_s addr:" << (char*)moe_fusion_wei_addr.zp[0]->buffer_ptr() - (char*)moe_fusion_wei_addr.scale[0]->buffer_ptr() << std::endl;
-        std::cout << "up_w - gate_zp addr:" << (char*)moe_fusion_wei_addr.weight[1]->buffer_ptr() - (char*)moe_fusion_wei_addr.zp[0]->buffer_ptr() << std::endl;
-        std::cout << "up_s - up_w addr:" << (char*)moe_fusion_wei_addr.scale[1]->buffer_ptr() - (char*)moe_fusion_wei_addr.weight[1]->buffer_ptr() << std::endl;
-        std::cout << "up_zp - up_s addr:" << (char*)moe_fusion_wei_addr.zp[1]->buffer_ptr() - (char*)moe_fusion_wei_addr.scale[1]->buffer_ptr() << std::endl;
-        std::cout << "down_w - up_zp addr:" << (char*)moe_fusion_wei_addr.weight[2]->buffer_ptr() - (char*)moe_fusion_wei_addr.zp[1]->buffer_ptr() << std::endl;
-        std::cout << "down_s - down_w addr:" << (char*)moe_fusion_wei_addr.scale[2]->buffer_ptr() - (char*)moe_fusion_wei_addr.weight[2]->buffer_ptr() << std::endl;
-        std::cout << "down_zp - down_s addr:" << (char*)moe_fusion_wei_addr.zp[2]->buffer_ptr() - (char*)moe_fusion_wei_addr.scale[2]->buffer_ptr() << std::endl;
+
         _dnnl_weights.resize(cur_moe->_config.num_expert);
         for (size_t j = 0; j < cur_moe->_config.num_expert; j++) {
             auto& dnnl_weights = _dnnl_weights[j];
@@ -657,12 +640,14 @@ public:
                 // weight shape: [ic, oc], type: u4
                 int64_t wei_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / 2;
                 std::cout << "wzx debug export.no: " << j << ", i: " << i << " wei_offset: " << wei_offset << std::endl;
+                std::cout << "wzx debug weight ptr: " << moe_fusion_wei_addr.weight[i]->get_layout().to_string() << std::endl;
+                std::cout << "wzx debug scale ptr: " << moe_fusion_wei_addr.scale[i]->get_layout().to_string() << std::endl;
+                std::cout << "wzx debug zp ptr: " << moe_fusion_wei_addr.zp[i]->get_layout().to_string() << std::endl;
                 dnnl_weights[i].weight =
                     convert2dnnl(moe_fusion_wei_addr.weight[i], {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba, wei_offset);
 
                 // scale shape: [ic / ic_group_size, oc], type: f16
                 int64_t scale_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;
-                std::cout << "wzx debug export.no: " << j << ", i: " << i << " scale_offset: " << scale_offset << std::endl;
                 dnnl_weights[i].scale = convert2dnnl(moe_fusion_wei_addr.scale[i],
                                                      {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
                                                      dnnl::memory::format_tag::ab,
@@ -670,14 +655,12 @@ public:
 
                 // zp shape: [ic / ic_group_size, oc], type: u4
                 int64_t zp_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;
-                std::cout << "wzx debug export.no: " << j << ", i: " << i << " zp_offset: " << zp_offset << std::endl;
                 dnnl_weights[i].zp = convert2dnnl(moe_fusion_wei_addr.zp[i],
                                                   {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
                                                   dnnl::memory::format_tag::ab,
                                                   zp_offset);
             }
         }
-        std::cout << "wzx debug end init_dnnl_weights" << std::endl;
     }
 
     void load(BinaryInputBuffer& ib) override {
@@ -1073,9 +1056,7 @@ public:
         }
 
         auto& engine = instance.get_network().get_engine();
-        std::cout << "wzx debug start init_dnnl_weights" << std::endl;
         init_dnnl_weights(cur_moe, engine, scratch.moe_fusion_wei_addr);
-        std::cout << "wzx debug end init_dnnl_weights" << std::endl;
         auto final_hidden_states_mem_ptr = instance.output_memory_ptr(0);
         auto final_hidden_states_layout = instance.get_output_layout(0);
 

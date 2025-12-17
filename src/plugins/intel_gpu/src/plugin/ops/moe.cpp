@@ -72,22 +72,22 @@ static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base
     std::cout << "wzx debug config.inter_size" << config.inter_size << std::endl;
     std::cout << "wzx debug group_num: " << group_num << ", " << group_num2 << std::endl;
 
-    pw.gate_w = alloc({config.num_expert * config.inter_size * config.hidden_size}, weights.weight_type);
+    pw.gate_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
     std::cout <<  "wzx debug shape: " << config.num_expert * config.inter_size * config.hidden_size << std::endl;
     std::cout << "wzx debug pw.gate_w foramt: " << pw.gate_w->get_layout().to_string() << std::endl;
     std::cout << "wzx debug weight.scale_type"  << weights.scale_type.to_string() << std::endl;
-    pw.gate_s = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.scale_type);
+    pw.gate_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
     std::cout << "wzx debug pw.gate_s foramt: " << pw.gate_s->get_layout().to_string() << std::endl;
-    pw.gate_z = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.zp_type);
+    pw.gate_z = alloc({config.num_expert, config.inter_size, group_num}, weights.zp_type);
     std::cout << "wzx debug pw.gate_z format" << pw.gate_z->get_layout().to_string() << std::endl;
-    pw.up_w = alloc({config.num_expert * config.inter_size * config.hidden_size}, weights.weight_type);
+    pw.up_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
     std::cout << "wzx debug pw.up_w foramt: " << pw.up_w->get_layout().to_string() << std::endl;
-    pw.up_s = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.scale_type);
-    pw.up_z = alloc({config.num_expert * config.inter_size * group_num * 1}, weights.zp_type);
-    pw.down_w = alloc({config.num_expert * config.hidden_size * config.inter_size}, weights.weight_type);
-    pw.down_s = alloc({config.num_expert * config.hidden_size * group_num2 * 1}, weights.scale_type);
+    pw.up_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
+    pw.up_z = alloc({config.num_expert, config.inter_size,  group_num}, weights.zp_type);
+    pw.down_w = alloc({config.num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
+    pw.down_s = alloc({config.num_expert, config.hidden_size, group_num2}, weights.scale_type);
     std::cout << "wzx debug pw.down_s foramt: " << pw.down_s->get_layout().to_string() << std::endl;
-    pw.down_z = alloc({config.num_expert * config.hidden_size * group_num2 * 1}, weights.zp_type);
+    pw.down_z = alloc({config.num_expert, config.hidden_size, group_num2}, weights.zp_type);
 }
  
 static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem) {
