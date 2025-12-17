@@ -100,7 +100,6 @@ static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3Gem
         cldnn::data_types out_dtype = cldnn::element_type_to_data_type(op->get_output_element_type(0));
         auto layout = cldnn::layout(const_shape, out_dtype, constFormat);
         auto data = op->get_data_ptr<uint8_t>();
-        // std::cout << "wzx debug fill layout: " << layout.to_string() << std::endl;
         std::cout << "wzx debug fill layout.bytes_count: " << layout.bytes_count() << std::endl;
         mem->copy_from(stream, data, 0, 0, layout.bytes_count(), true);
     };
