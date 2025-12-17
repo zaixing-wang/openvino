@@ -65,12 +65,13 @@ static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base
     const size_t group_num2 = (config.inter_size / config.group_size > 0) ? (config.inter_size / config.group_size) : 1;
 
     pw.gate_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
+    pw.up_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
+    pw.down_w = alloc({config.num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
+
     pw.gate_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
     pw.gate_z = alloc({config.num_expert, config.inter_size, group_num}, weights.zp_type);
-    pw.up_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
     pw.up_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
     pw.up_z = alloc({config.num_expert, config.inter_size,  group_num}, weights.zp_type);
-    pw.down_w = alloc({config.num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
     pw.down_s = alloc({config.num_expert, config.hidden_size, group_num2}, weights.scale_type);
     pw.down_z = alloc({config.num_expert, config.hidden_size, group_num2}, weights.zp_type);
 }
@@ -89,12 +90,13 @@ static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3Gem
     };
 
     fill(op->get_weights().gates[0], wei_mem.gate_w);  
-    fill(op->get_weights().gates[1], wei_mem.gate_s);                                                 
-    fill(op->get_weights().gates[2], wei_mem.gate_z);                                                 
     fill(op->get_weights().ups[0], wei_mem.up_w);                                                 
+    fill(op->get_weights().downs[0], wei_mem.down_w);
+
+    fill(op->get_weights().gates[1],  wei_mem.gate_s);                                                 
+    fill(op->get_weights().gates[2], wei_mem.gate_z);                                                 
     fill(op->get_weights().ups[1], wei_mem.up_s);                                                 
     fill(op->get_weights().ups[2], wei_mem.up_z);                                                 
-    fill(op->get_weights().downs[0], wei_mem.down_w);
     fill(op->get_weights().downs[1], wei_mem.down_s);
     fill(op->get_weights().downs[2], wei_mem.down_z); 
 }

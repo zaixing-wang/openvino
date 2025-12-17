@@ -624,6 +624,14 @@ public:
         init(cur_moe);
 
         _dnnl_weights.resize(cur_moe->_config.num_expert);
+
+        cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(moe_fusion_wei_addr.scale[0], engine.get_service_stream());
+        std::cout << "wzx debug scale[0] data:" ;
+        for (int i = 0; i < 768 * 128; i++) {
+            std::cout << "[" << i << "]: " << print_ptr[i] << " ";
+        }   
+        std::cout << std::endl;
+
         for (size_t j = 0; j < cur_moe->_config.num_expert; j++) {
             auto& dnnl_weights = _dnnl_weights[j];
             dnnl_weights.resize(3);
@@ -639,10 +647,10 @@ public:
             for (int i = 0; i < 3; i++) {
                 // weight shape: [ic, oc], type: u4
                 int64_t wei_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / 2;
-                std::cout << "wzx debug export.no: " << j << ", i: " << i << " wei_offset: " << wei_offset << std::endl;
-                std::cout << "wzx debug weight ptr: " << moe_fusion_wei_addr.weight[i]->get_layout().to_string() << std::endl;
-                std::cout << "wzx debug scale ptr: " << moe_fusion_wei_addr.scale[i]->get_layout().to_string() << std::endl;
-                std::cout << "wzx debug zp ptr: " << moe_fusion_wei_addr.zp[i]->get_layout().to_string() << std::endl;
+                // std::cout << "wzx debug export.no: " << j << ", i: " << i << " wei_offset: " << wei_offset << std::endl;
+                // std::cout << "wzx debug weight ptr: " << moe_fusion_wei_addr.weight[i]->get_layout().to_string() << std::endl;
+                // std::cout << "wzx debug scale ptr: " << moe_fusion_wei_addr.scale[i]->get_layout().to_string() << std::endl;
+                // std::cout << "wzx debug zp ptr: " << moe_fusion_wei_addr.zp[i]->get_layout().to_string() << std::endl;
                 dnnl_weights[i].weight =
                     convert2dnnl(moe_fusion_wei_addr.weight[i], {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba, wei_offset);
 
