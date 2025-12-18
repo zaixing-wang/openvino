@@ -20,6 +20,7 @@
 #    include "intel_gpu/graph/kernel_impl_params.hpp"
 #    include "intel_gpu/primitives/moe_3gemm_fused_compressed.hpp"
 #    include "intel_gpu/runtime/lru_cache.hpp"
+#    include "intel_gpu/runtime/global_ptr.hpp"
 #    include "intel_gpu/runtime/stream.hpp"
 #    include "intel_gpu/runtime/utils.hpp"
 #    include "moe_3gemm_fused_inst.h"
@@ -624,13 +625,13 @@ public:
         init(cur_moe);
 
         _dnnl_weights.resize(cur_moe->_config.num_expert);
-
-        cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(moe_fusion_wei_addr.scale[0], engine.get_service_stream());
-        std::cout << "wzx debug scale[0] data:" ;
-        for (int i = 0; i < 768 * 128; i++) {
-            std::cout << "[" << i << "]: " << print_ptr[i] << " ";
-        }   
-        std::cout << std::endl;
+        // cldnn::print_tracked_ptr(engine.get_service_stream());
+        // cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(moe_fusion_wei_addr.scale[0], engine.get_service_stream());
+        // std::cout << "wzx debug scale[0] data:" ;
+        // for (int i = 0; i < 10; i++) {
+        //     std::cout << "[" << i << "]: " << print_ptr[i] << " ";
+        // }   
+        // std::cout << std::endl;
 
         for (size_t j = 0; j < cur_moe->_config.num_expert; j++) {
             auto& dnnl_weights = _dnnl_weights[j];
@@ -726,6 +727,7 @@ public:
     }
 
     void prepare_internal_buffers(typed_primitive_inst<moe_3gemm_fused_compressed>& instance, scratch_buffers& scratch, size_t batch) {
+        // std::cout << "wzx debug prepare_internel_buffers" << std::endl;
         const auto& intermediates_memories = instance.get_intermediates_memories();
         auto& engine = instance.get_network().get_engine();
         scratch.topk_id = intermediates_memories[0];
@@ -745,22 +747,6 @@ public:
                 scratch.expert_masks[i].topk = engine.create_subbuffer(*intermediates_memories[8], mask_layout, i * batch * sizeof(int32_t));
             }
         }
-
-        // gate
-        // scratch.moe_fusion_wei_addr.weight[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_0));
-        // scratch.moe_fusion_wei_addr.scale[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_0));
-        // scratch.moe_fusion_wei_addr.zp[0] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_0));
-
-        // // up
-        // scratch.moe_fusion_wei_addr.weight[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_1));
-        // scratch.moe_fusion_wei_addr.scale[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_1));
-        // scratch.moe_fusion_wei_addr.zp[1] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_1));
-
-        // // down
-        // scratch.moe_fusion_wei_addr.weight[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::WEIGHT_2));
-        // scratch.moe_fusion_wei_addr.scale[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::SCALE_2));
-        // scratch.moe_fusion_wei_addr.zp[2] = instance.input_memory_ptr(static_cast<size_t>(MOEInputIndex::ZP_2));
-
         scratch.moe_fusion_wei_addr.weight[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_w;
         scratch.moe_fusion_wei_addr.scale[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_s;
         scratch.moe_fusion_wei_addr.zp[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_z;
