@@ -3,6 +3,7 @@
 //
 #include "openvino/op/constant.hpp"
 #include "openvino/op/moe.hpp"
+#include "openvino/core/model.hpp"
 #include "intel_gpu/op/moe_compressed.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/op/moe_3gemm_fused_compressed.hpp"
@@ -18,6 +19,11 @@
 #include "intel_gpu/runtime/global_ptr.hpp"
 #include <limits>
 
+namespace cldnn {
+    std::string file_path;
+    size_t offload_to_disk = 0;
+}
+
 namespace ov {
 namespace op {
 namespace internal {
@@ -30,91 +36,6 @@ using MOECompressed = ov::intel_gpu::op::MOECompressed;
 namespace ov::intel_gpu {
 using namespace cldnn;
 
-static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base, cldnn::moe_weights& pw, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
-    size_t weights_offset = 0;
-    auto weights = op->get_weights();
-    auto config = op->get_config();
-    auto alloc = [&] (ov::Shape shape, ov::element::Type type) {
-        auto format = cldnn::format::get_default_format(shape.size());
-        cldnn::data_types out_dtype = cldnn::element_type_to_data_type(type);
-        auto layout = cldnn::layout(shape, out_dtype, format);
-        auto mem = engine.create_subbuffer(*base, layout, weights_offset);
-        weights_offset += layout.bytes_count();
-        return mem;
-    };
-    const size_t group_num = (config.hidden_size / config.group_size > 0) ? (config.hidden_size / config.group_size) : 1;
-    const size_t group_num2 = (config.inter_size / config.group_size > 0) ? (config.inter_size / config.group_size) : 1;
-
-    pw.gate_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
-    pw.up_w = alloc({config.num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
-    pw.down_w = alloc({config.num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
-
-    pw.gate_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
-    pw.gate_z = alloc({config.num_expert, config.inter_size, group_num}, weights.zp_type);
-    pw.up_s = alloc({config.num_expert, config.inter_size, group_num}, weights.scale_type);
-    pw.up_z = alloc({config.num_expert, config.inter_size,  group_num}, weights.zp_type);
-    pw.down_s = alloc({config.num_expert, config.hidden_size, group_num2}, weights.scale_type);
-    pw.down_z = alloc({config.num_expert, config.hidden_size, group_num2}, weights.zp_type);
-}
-
-static size_t get_weights_size(const std::shared_ptr<MOE3GemmFusedCompressed>& op) {
-    size_t weights_size = 0;
-    for (int i = 0; i < 3; i++)
-        weights_size += op->get_weights().gates[i]->get_byte_size();
-    for (int i = 0; i < 3; i++)
-        weights_size += op->get_weights().ups[i]->get_byte_size();
-    for (int i = 0; i < 3; i++)
-        weights_size += op->get_weights().downs[i]->get_byte_size();
-    return weights_size;
-}
-
-static cldnn::memory::ptr pre_allocate_weights(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressed>& op) {
-    auto size = get_weights_size(op);
-    auto layout = cldnn::layout({1, 1, 1, static_cast<ov::Dimension::value_type>(size)}, ov::element::i8, cldnn::format::bfyx);
-    auto alloc_type = p.get_engine().get_preferred_memory_allocation_type(false);
-    auto mem = p.get_engine().allocate_memory(layout, alloc_type, false);
-    return mem;
-}
-
- 
-static void fill_weights_memory(ProgramBuilder& p, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem) {
-    auto& stream = p.get_engine().get_service_stream();
-    auto fill = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem) {
-        if (!mem)
-            return;
-        ov::Shape const_shape = op->get_shape();
-        auto constFormat = cldnn::format::get_default_format(const_shape.size());
-        cldnn::data_types out_dtype = cldnn::element_type_to_data_type(op->get_output_element_type(0));
-        auto layout = cldnn::layout(const_shape, out_dtype, constFormat);
-        auto data = op->get_data_ptr<uint8_t>();
-        mem->copy_from(stream, data, 0, 0, layout.bytes_count(), true);
-    };
-
-    fill(op->get_weights().gates[0], wei_mem.gate_w);  
-    fill(op->get_weights().ups[0], wei_mem.up_w);                                                 
-    fill(op->get_weights().downs[0], wei_mem.down_w);
-
-    fill(op->get_weights().gates[1],  wei_mem.gate_s);                                                 
-    fill(op->get_weights().gates[2], wei_mem.gate_z);                                                 
-    fill(op->get_weights().ups[1], wei_mem.up_s);                                                 
-    fill(op->get_weights().ups[2], wei_mem.up_z);                                                 
-    fill(op->get_weights().downs[1], wei_mem.down_s);
-    fill(op->get_weights().downs[2], wei_mem.down_z); 
-    // auto data = op->get_weights().gates[1]->get_data_ptr<ov::float16>();
-    // std::cout << "wzx debug scale[0] cpu data:" ;
-    // for (int i = 0; i < 10; i++) {
-    //     std::cout << "[" << i << "]: " << data[i] << " ";
-    // }
-    // std::cout << std::endl;
-    // cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(wei_mem.gate_s, stream);
-    // std::cout << "wzx debug scale ptr addr:" << wei_mem.gate_s.get() << std::endl;
-    // std::cout << "wzx debug scale[0] gpu data:" ;
-    // for (int i = 0; i < 10; i++) {
-    //     std::cout << "[" << i << "]: " << print_ptr[i] << " ";
-    // }   
-    // std::cout << std::endl;
-}
-
 static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op) {
     auto inputs = p.GetInputInfo(op);
     const auto& config = op->get_config();
@@ -124,22 +45,20 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
     validate_inputs_count(op, {2});
 
     const std::string layerName = layer_type_name_ID(op);
-    auto base_mem = pre_allocate_weights(p, op);
     auto& engine = p.get_engine();
+    const auto& model = p.get_model();
+    if (model->has_rt_info("offload_to_disk")) {
+        cldnn::offload_to_disk = model->get_rt_info()["offload_to_disk"].as<size_t>();
+        cldnn::file_path = model->get_rt_info()["__weights_path"].as<std::string>();
+    }
+    auto base_mem = cldnn::pre_allocate_weights(engine, op);
     cldnn::moe_weights moe_w;
-    create_weights_memory(engine, base_mem, moe_w, op);
-    fill_weights_memory(p, op, moe_w);
+    cldnn::create_weights_memory(engine, base_mem, moe_w, op);
+    if (!cldnn::offload_to_disk) {
+        cldnn::fill_weights_memory(engine, op, moe_w);
+    }
     const cldnn::moe_3gemm_fused_compressed moe(layerName, inputs, config, moe_w, op, base_mem);
-    // std::cout << "wzx debug layerName:" << layerName << std::endl;
     p.add_primitive(*op, moe);
-    // cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(moe._weights.gate_s, p.get_engine().get_service_stream());
-    // cldnn::set_tracked_ptr(moe._weights.gate_s);
-    // cldnn::print_tracked_ptr(p.get_engine().get_service_stream());
-    // std::cout << "wzx debug scale[0] gpu data2:" ;
-    // for (int i = 0; i < 10; i++) {
-    //     std::cout << "[" << i << "]: " << print_ptr[i] << " ";
-    // }   
-    // std::cout << std::endl;
 }
 
 static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::op::internal::MOECompressed>& op) {
