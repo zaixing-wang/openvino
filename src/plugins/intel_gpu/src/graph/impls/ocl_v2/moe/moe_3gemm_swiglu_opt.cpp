@@ -1089,9 +1089,9 @@ public:
     cldnn::event::ptr exec_single_batch(const std::vector<cldnn::event::ptr>& events,
                                         typed_primitive_inst<moe_3gemm_fused_compressed>& instance,
                                         scratch_buffers& scratch, LRUCache& cache) {
-        // if(cldnn::offload_to_disk) {
-        //     sleep(2);
-        // }
+        if(cldnn::offload_to_disk) {
+            sleep(2);
+        }
         auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
         int max_topk = static_cast<int>(cur_moe->_config.top_k);
 
@@ -1117,7 +1117,7 @@ public:
             static cldnn::memory::ptr base_mem;
             static cldnn::moe_weights shell_params;
             static cldnn::memory::ptr expert_index_buffer = nullptr;
-            // events[0]->wait();
+            events[0]->wait();
             auto& op = cur_moe->_op;
             auto& engine = instance.get_network().get_engine();
             uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
