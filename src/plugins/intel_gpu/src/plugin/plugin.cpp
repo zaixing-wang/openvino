@@ -257,6 +257,7 @@ std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::shared_ptr<
 std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::shared_ptr<const ov::Model>& model,
                                                           const ov::AnyMap& orig_config,
                                                           const ov::SoPtr<ov::IRemoteContext>& context) const {
+    std::cout << "wzx debug gpu compile_model 2" << std::endl;
     auto context_impl = get_context_impl(context);
     context_impl->initialize();
 

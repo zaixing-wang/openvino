@@ -328,6 +328,8 @@ Constant::Constant(const Constant& other)
     : m_element_type{other.m_element_type},
       m_shape{other.m_shape},
       m_byte_strides{other.m_byte_strides},
+      m_offset{other.m_offset},
+    //   m_const_size{other.m_const_size},
       m_data{other.m_data},
       m_all_elements_bitwise_identical{other.m_all_elements_bitwise_identical.load()},
       m_all_elements_bitwise_identical_checked{other.m_all_elements_bitwise_identical_checked.load()},
@@ -600,6 +602,12 @@ bool Constant::visit_attributes(AttributeVisitor& visitor) {
     const auto prev_type = m_element_type;
     visitor.on_attribute("element_type", m_element_type);
     visitor.on_attribute("shape", m_shape);
+    // std::cout << "wzx debug visit attributes:" << get_friendly_name() << std::endl;
+    visitor.on_attribute("offset", m_offset);
+    // std::cout << "wzx debug visit offset:" << m_offset << std::endl;
+    // visitor.on_attribute("size", m_const_size);
+    // std::cout << "wzx debug visit size:" << m_const_size << std::endl;
+    // std::cout << "wzx debug visit success" << std::endl;
 
     const auto need_to_reallocate = (m_shape != prev_shape) || (prev_type != m_element_type);
     const auto is_string_constant = (m_element_type == element::string);

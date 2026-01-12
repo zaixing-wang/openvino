@@ -9,6 +9,9 @@ KERNEL(softmax_topk)(
     __global uint* output_index, // [input_batch, TOP_K]
     __global MOE_DTYPE* output // [input_batch, TOP_K]
 ) {
+    // if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
+    //     printf("wzx debug hit softmax_topk\n");
+    // }
     // gws [batch, sort_in_num]
     const uint batch = (uint)get_global_id(0);
     const uint sort_index = (uint)get_global_id(1);
@@ -63,6 +66,11 @@ KERNEL(softmax_topk)(
             output_index[i] = local_index[i];
         }
     }
+    // if (get_global_id(0) == 0 && get_global_id(1) == 0 && get_global_id(2) == 0) {
+    //     for(uint i = 0; i < TOP_K; i++) {
+    //         printf("wzx debug softmax_topk out[%d]: %d, %f.\n", i, output_index[i], output[i]);
+    //     }
+    // }
 }
 
 #elif GATHER_ENABLE

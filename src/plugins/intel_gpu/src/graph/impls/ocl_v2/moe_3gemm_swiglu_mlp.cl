@@ -125,6 +125,8 @@ KERNEL (mlp_gate_up)(
     __global uchar* gate_weight = (__global uchar*)(gate_weight_addr + expert_id * expert_wei_size);
     __global half* gate_scale = (__global half*)(gate_scale_addr + expert_id * expert_scale_size);
     __global uchar* gate_zp = (__global uchar*)(gate_zp_addr + expert_id * expert_zp_size);
+    // printf("expert_no:%d, expert_id:%d, gate_weight[0]: %d, gate_weight[1]:%d, gate_wight[2]:%d \n", expert_no, expert_id, gate_weight[0], gate_weight[1], gate_weight[2]);
+    // printf("expert_no:%d, expert_id:%d, gate_scale[0]: %f, gate_scale[1]:%f, gate_wight[2]:%f \n", expert_no, expert_id, gate_scale[0], gate_scale[1], gate_scale[2]);
 
     // up, [HIDDEN_SIZE, INTERMEDIATE_SIZE]
     __global uchar* up_weight = (__global uchar*)(up_weight_addr + expert_id * expert_wei_size);

@@ -3,6 +3,7 @@
 //
 
 #include "moe_3gemm_swiglu_opt.hpp"
+#include "LRUCache.hpp"
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
 #    include <initializer_list>
@@ -27,6 +28,15 @@
 #    include "ocl_v2/utils/fused_ops_jitter.hpp"
 #    include "ocl_v2/utils/jitter.hpp"
 #    include "primitive_inst.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#endif
 
 namespace ov::intel_gpu::ocl {
 
@@ -521,6 +531,15 @@ dnnl::memory convert2dnnl(const memory::ptr& ptr, const std::vector<int64_t>& di
     return ptr->get_onednn_memory(dnnl::memory::desc(dnnl::memory::dims(dim), convert_data_type(ptr->get_layout().data_type), tag), offset);
 }
 
+static void on_evict(size_t layer, size_t expert, void* addr, void* params) {
+    if (addr) {
+        delete static_cast<cldnn::memory::ptr*>(addr);
+    }
+    if (params) {
+        delete static_cast<cldnn::moe_weights*>(params);
+    }
+}
+
 class moe_3gemm_swiglu_opt_impl : public PrimitiveImplOCL {
 public:
     DECLARE_OBJECT_TYPE_SERIALIZATION(ov::intel_gpu::ocl::MoE3GemmSwigluImpl)
@@ -578,10 +597,9 @@ public:
         memory::ptr gate;
         // buffers for batch and topk from cpu, each expert has one
         std::vector<expert_mask_gpu> expert_masks;
-
-        moe_fusion_weights_base_addr moe_fusion_wei_addr;
         memory::ptr input_routing_weights;
         memory::ptr input_router_topk_idx;
+        moe_fusion_weights_base_addr moe_fusion_wei_addr;
     };
 
     std::vector<std::vector<dnnl_weights>> _dnnl_weights;
@@ -625,13 +643,6 @@ public:
         init(cur_moe);
 
         _dnnl_weights.resize(cur_moe->_config.num_expert);
-        // cldnn::print_tracked_ptr(engine.get_service_stream());
-        // cldnn::mem_lock<ov::float16, mem_lock_type::read> print_ptr(moe_fusion_wei_addr.scale[0], engine.get_service_stream());
-        // std::cout << "wzx debug scale[0] data:" ;
-        // for (int i = 0; i < 10; i++) {
-        //     std::cout << "[" << i << "]: " << print_ptr[i] << " ";
-        // }   
-        // std::cout << std::endl;
 
         for (size_t j = 0; j < cur_moe->_config.num_expert; j++) {
             auto& dnnl_weights = _dnnl_weights[j];
@@ -645,29 +656,27 @@ public:
             dnnl_weights[2].ic = _intermediate_size;
             dnnl_weights[2].ic_group_size = _down_group_size;
             dnnl_weights[2].oc = _hidden_size;
-            for (int i = 0; i < 3; i++) {
-                // weight shape: [ic, oc], type: u4
-                int64_t wei_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / 2;
-                // std::cout << "wzx debug export.no: " << j << ", i: " << i << " wei_offset: " << wei_offset << std::endl;
-                // std::cout << "wzx debug weight ptr: " << moe_fusion_wei_addr.weight[i]->get_layout().to_string() << std::endl;
-                // std::cout << "wzx debug scale ptr: " << moe_fusion_wei_addr.scale[i]->get_layout().to_string() << std::endl;
-                // std::cout << "wzx debug zp ptr: " << moe_fusion_wei_addr.zp[i]->get_layout().to_string() << std::endl;
-                dnnl_weights[i].weight =
-                    convert2dnnl(moe_fusion_wei_addr.weight[i], {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba, wei_offset);
+            if (!cldnn::offload_to_disk) {
+                for (int i = 0; i < 3; i++) {
+                    // weight shape: [ic, oc], type: u4
+                    int64_t wei_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / 2;
+                    dnnl_weights[i].weight =
+                        convert2dnnl(moe_fusion_wei_addr.weight[i], {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba, wei_offset);
 
-                // scale shape: [ic / ic_group_size, oc], type: f16
-                int64_t scale_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;
-                dnnl_weights[i].scale = convert2dnnl(moe_fusion_wei_addr.scale[i],
-                                                     {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
-                                                     dnnl::memory::format_tag::ab,
-                                                     scale_offset);
+                    // scale shape: [ic / ic_group_size, oc], type: f16
+                    int64_t scale_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;
+                    dnnl_weights[i].scale = convert2dnnl(moe_fusion_wei_addr.scale[i],
+                                                        {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
+                                                        dnnl::memory::format_tag::ab,
+                                                        scale_offset);
 
-                // zp shape: [ic / ic_group_size, oc], type: u4
-                int64_t zp_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;
-                dnnl_weights[i].zp = convert2dnnl(moe_fusion_wei_addr.zp[i],
-                                                  {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
-                                                  dnnl::memory::format_tag::ab,
-                                                  zp_offset);
+                    // zp shape: [ic / ic_group_size, oc], type: u4
+                    int64_t zp_offset = j * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;
+                    dnnl_weights[i].zp = convert2dnnl(moe_fusion_wei_addr.zp[i],
+                                                    {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},
+                                                    dnnl::memory::format_tag::ab,
+                                                    zp_offset);
+                }
             }
         }
     }
@@ -727,7 +736,6 @@ public:
     }
 
     void prepare_internal_buffers(typed_primitive_inst<moe_3gemm_fused_compressed>& instance, scratch_buffers& scratch, size_t batch) {
-        // std::cout << "wzx debug prepare_internel_buffers" << std::endl;
         const auto& intermediates_memories = instance.get_intermediates_memories();
         auto& engine = instance.get_network().get_engine();
         scratch.topk_id = intermediates_memories[0];
@@ -747,15 +755,17 @@ public:
                 scratch.expert_masks[i].topk = engine.create_subbuffer(*intermediates_memories[8], mask_layout, i * batch * sizeof(int32_t));
             }
         }
-        scratch.moe_fusion_wei_addr.weight[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_w;
-        scratch.moe_fusion_wei_addr.scale[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_s;
-        scratch.moe_fusion_wei_addr.zp[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_z;
-        scratch.moe_fusion_wei_addr.weight[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_w;
-        scratch.moe_fusion_wei_addr.scale[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_s;
-        scratch.moe_fusion_wei_addr.zp[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_z;
-        scratch.moe_fusion_wei_addr.weight[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_w;
-        scratch.moe_fusion_wei_addr.scale[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_s;
-        scratch.moe_fusion_wei_addr.zp[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_z;
+        if (!cldnn::offload_to_disk) {
+            scratch.moe_fusion_wei_addr.weight[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_w;
+            scratch.moe_fusion_wei_addr.scale[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_s;
+            scratch.moe_fusion_wei_addr.zp[0] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.gate_z;
+            scratch.moe_fusion_wei_addr.weight[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_w;
+            scratch.moe_fusion_wei_addr.scale[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_s;
+            scratch.moe_fusion_wei_addr.zp[1] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.up_z;
+            scratch.moe_fusion_wei_addr.weight[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_w;
+            scratch.moe_fusion_wei_addr.scale[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_s;
+            scratch.moe_fusion_wei_addr.zp[2] = instance.get_typed_desc<moe_3gemm_fused_compressed>()->_weights.down_z;
+        }
     }
 
     void get_expert_mask_from_gpu(const MOE3GemmFusedCompressed::Config& config, memory::ptr mem, stream& stream, expert_mask_cpu& expert_mask) {
@@ -862,9 +872,226 @@ public:
         return std::make_tuple(mem, layout);
     }
 
+    static cldnn::moe_weights get_params(typed_primitive_inst<moe_3gemm_fused_compressed>& instance, uint32_t expert, LRUCache& cache) {
+        auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
+        auto& engine = instance.get_network().get_engine();
+        auto& id = cur_moe->id;
+        auto& op = cur_moe->_op;
+        size_t layer = 0;
+        if (id == "moe:moe_router") {
+            layer = 0;
+        } else {
+            size_t pos = id.rfind('_');
+            if (pos != std::string::npos && pos + 1 < id.size()) {
+                std::string numStr = id.substr(pos + 1);
+                layer = atoi(numStr.c_str());
+            } 
+        }
+        cldnn::moe_weights tmp_params;
+        if (LRUCache::INSERT == cache.insert_or_refresh(layer, expert, nullptr, nullptr)) {
+            cldnn::moe_weights* expert_params = new cldnn::moe_weights;
+            std::vector<uint32_t> experts_list_single;
+            experts_list_single.push_back(expert);
+            cldnn::memory::ptr* tmp_base = new cldnn::memory::ptr;
+            *tmp_base = cldnn::pre_allocate_weights(engine, op, 1);
+            create_weights_memory(engine, *tmp_base, *expert_params, op, 1);
+            fill_weights_memory_from_disk(engine, op, *expert_params, experts_list_single);
+            cache.insert_or_refresh(layer, expert, (void*)tmp_base, (void*)expert_params);
+            tmp_params = *expert_params;
+        } else {
+            tmp_params = *static_cast<cldnn::moe_weights*>(cache.get_expert_params(layer, expert));
+        }
+        return tmp_params;
+    }
+
+    static void read_from_file(const char* fname, void* ptr, size_t len, size_t offset) {
+        constexpr size_t MAX_CHUNK = 64ull * 1024 * 1024; // 64MB
+
+        #ifdef _WIN32
+
+            thread_local HANDLE hFile = NULL;
+            if (!hFile) {
+                hFile = CreateFileA(
+                    fname,
+                    GENERIC_READ,
+                    FILE_SHARE_READ,
+                    NULL,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+                if (hFile == INVALID_HANDLE_VALUE) {
+                    printf("Failed to open file: %lu\n", GetLastError());
+                    return;
+                }
+            }
+
+            LARGE_INTEGER li;
+            li.QuadPart = static_cast<LONGLONG>(offset);
+            if (!SetFilePointerEx(hFile, li, NULL, FILE_BEGIN)) {
+                printf("SetFilePointerEx failed: %lu\n", GetLastError());
+                return;
+            }
+
+            size_t bytes_read = 0;
+            while (bytes_read < len) {
+                DWORD chunk_size =
+                    static_cast<DWORD>(std::min(len - bytes_read, MAX_CHUNK));
+                DWORD chunk_read = 0;
+
+                BOOL ret = ReadFile(
+                    hFile,
+                    static_cast<char*>(ptr) + bytes_read,
+                    chunk_size,
+                    &chunk_read,
+                    NULL
+                );
+
+                if (!ret) {
+                    printf("ReadFile failed: %lu\n", GetLastError());
+                    return;
+                }
+
+                if (chunk_read == 0) {
+                    printf("Unexpected EOF\n");
+                    return;
+                }
+
+                bytes_read += chunk_read;
+            }
+
+        #else // Linux / Unix
+
+            thread_local int fd = -1;
+            if (fd < 0) {
+                fd = open(fname, O_RDONLY);
+                if (fd < 0) {
+                    printf("Failed to open file: %s\n", strerror(errno));
+                    return;
+                }
+            }
+
+            size_t bytes_read = 0;
+            while (bytes_read < len) {
+                size_t chunk_size = std::min(len - bytes_read, MAX_CHUNK);
+
+                ssize_t ret = pread(
+                    fd,
+                    static_cast<char*>(ptr) + bytes_read,
+                    chunk_size,
+                    static_cast<off_t>(offset + bytes_read)
+                );
+
+                if (ret < 0) {
+                    printf("pread failed: %s\n", strerror(errno));
+                    return;
+                }
+
+                if (ret == 0) {
+                    printf("Unexpected EOF\n");
+                    return;
+                }
+
+                bytes_read += static_cast<size_t>(ret);
+            }
+
+        #endif
+    }
+
+    static void fill_weights_memory_from_lru(typed_primitive_inst<moe_3gemm_fused_compressed>& instance, cldnn::moe_weights& wei_mem, const std::vector<uint32_t>& experts_list, LRUCache& cache) {
+        int i = 0;
+        auto& cur_net = instance.get_network();
+        auto& stream = cur_net.get_stream();
+        for (uint32_t expert : experts_list) {
+            auto param = get_params(instance, expert, cache);
+            wei_mem.gate_w->copy_from(stream, *param.gate_w, 0, i * param.gate_w->size(), param.gate_w->size() , true);
+            wei_mem.up_w->copy_from(stream, *param.up_w, 0, i * param.up_w->size(), param.up_w->size() , true);
+            wei_mem.down_w->copy_from(stream, *param.down_w, 0, i * param.down_w->size(), param.down_w->size() , true);
+            wei_mem.gate_s->copy_from(stream, *param.gate_s, 0, i * param.gate_s->size(), param.gate_s->size() , true);
+            wei_mem.gate_z->copy_from(stream, *param.gate_z, 0, i * param.gate_z->size(), param.gate_z->size() , true);
+            wei_mem.up_s->copy_from(stream, *param.up_s, 0, i * param.up_s->size(), param.up_s->size() , true);
+            wei_mem.up_z->copy_from(stream, *param.up_z, 0, i * param.up_z->size(), param.up_z->size() , true);
+            wei_mem.down_s->copy_from(stream, *param.down_s, 0, i * param.down_s->size(), param.down_s->size() , true);
+            wei_mem.down_z->copy_from(stream, *param.down_z, 0, i * param.down_z->size(), param.down_z->size() , true);
+            ++i;
+        } 
+    }
+
+    static void* alloc_rw_memory(size_t size) {
+    #ifdef _WIN32
+        LPVOID p = VirtualAlloc(
+            NULL,
+            size,
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE
+        );
+        if (!p) {
+            printf("VirtualAlloc failed: %lu\n", GetLastError());
+        }
+        return p;
+    #else
+        void* p = std::malloc(size);
+        if (!p) {
+            printf("malloc failed\n");
+        }
+        return p;
+    #endif
+    }
+
+    static void free_rw_memory(void* ptr, size_t /*size*/) {
+    #ifdef _WIN32
+        if (ptr) {
+            VirtualFree(ptr, 0, MEM_RELEASE);
+        }
+    #else
+        std::free(ptr);
+    #endif
+    }
+
+    static void fill_weights_memory_from_disk(cldnn::engine& engine, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem, const std::vector<uint32_t>& experts_list) {
+        auto num_expert = op->get_config().num_expert;
+        auto fill_from_cpu = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem, size_t expert_no, size_t i) {
+            if (!mem)
+                return;
+            ov::Shape const_shape = op->get_shape();
+            auto constFormat = cldnn::format::get_default_format(const_shape.size());
+            cldnn::data_types out_dtype = cldnn::element_type_to_data_type(op->get_output_element_type(0));
+            auto layout = cldnn::layout(const_shape, out_dtype, constFormat);
+
+            // auto data = op->get_data_ptr<uint8_t>();
+            
+            auto const_bytes = layout.bytes_count();
+
+            auto offset = op->get_offset();
+            void* pBase = alloc_rw_memory(const_bytes);
+            read_from_file(cldnn::file_path.c_str(), pBase, const_bytes, offset);
+            void* data = pBase;
+
+            auto per_expert_size = const_bytes / num_expert;
+            mem->copy_from(engine.get_service_stream(), data, expert_no * per_expert_size, i * per_expert_size, per_expert_size, true);
+            free_rw_memory(pBase, const_bytes);
+        };
+        size_t i = 0; 
+        for (uint32_t expert: experts_list) {
+            fill_from_cpu(op->get_weights().gates[0], wei_mem.gate_w, expert, i);  
+            fill_from_cpu(op->get_weights().ups[0], wei_mem.up_w, expert, i);                                                 
+            fill_from_cpu(op->get_weights().downs[0], wei_mem.down_w, expert, i);
+            fill_from_cpu(op->get_weights().gates[1],  wei_mem.gate_s, expert, i);                                                 
+            fill_from_cpu(op->get_weights().gates[2], wei_mem.gate_z, expert, i );                                                 
+            fill_from_cpu(op->get_weights().ups[1], wei_mem.up_s, expert, i);                                                 
+            fill_from_cpu(op->get_weights().ups[2], wei_mem.up_z, expert, i);                                                 
+            fill_from_cpu(op->get_weights().downs[1], wei_mem.down_s, expert, i);
+            fill_from_cpu(op->get_weights().downs[2], wei_mem.down_z, expert, i); 
+            i++;
+        }
+    }
+
     cldnn::event::ptr exec_single_batch(const std::vector<cldnn::event::ptr>& events,
                                         typed_primitive_inst<moe_3gemm_fused_compressed>& instance,
-                                        scratch_buffers& scratch) {
+                                        scratch_buffers& scratch, LRUCache& cache) {
+        // if(cldnn::offload_to_disk) {
+        //     sleep(2);
+        // }
         auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
         int max_topk = static_cast<int>(cur_moe->_config.top_k);
 
@@ -879,6 +1106,62 @@ public:
         const size_t subgroup_size = instance.get_impl_params()->get_device_info().arch >= gpu_arch::xe2 ? 32 : 16;
         const size_t max_work_group_size = instance.get_impl_params()->get_device_info().max_work_group_size;
 
+        std::cout << "wzx debug batch_mem_ptr1:" << std::endl;
+        for (int i = 0; i < max_topk; i++) {
+            uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
+            std::cout << "[" << i << "]: " << p_data[i] << " ";
+        }
+        std::cout << std::endl;
+ 
+        if(cldnn::offload_to_disk) {
+            static cldnn::memory::ptr base_mem;
+            static cldnn::moe_weights shell_params;
+            static cldnn::memory::ptr expert_index_buffer = nullptr;
+            // events[0]->wait();
+            auto& op = cur_moe->_op;
+            auto& engine = instance.get_network().get_engine();
+            uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
+            std::vector<uint32_t> experts_list;
+            for (int i = 0; i < max_topk; i++) {
+                experts_list.push_back(*p_expert++);
+            }
+            static bool initialized = false;
+            if (!initialized) {
+                base_mem = cldnn::pre_allocate_weights(engine, op, max_topk);
+                create_weights_memory(engine, base_mem, shell_params, op, max_topk);
+                size_t experts_index_size = 4 * max_topk; // each expert has 4 bytes
+                auto layout_expert = cldnn::layout({1, 1, 1, static_cast<ov::Dimension::value_type>(experts_index_size)}, ov::element::i8, cldnn::format::bfyx);
+                expert_index_buffer = engine.allocate_memory(layout_expert, allocation_type::usm_host, false);
+                fill_weights_memory_from_disk(engine, op, shell_params, experts_list);
+                uint32_t* p_expert_index = (uint32_t*)expert_index_buffer->buffer_ptr();
+                for (int i = 0; i < max_topk; i++) {
+                    *p_expert_index++ = i;  // update batch_mem_ptr as re-map
+                }
+                initialized = true;
+            } 
+            fill_weights_memory_from_lru(instance, shell_params, experts_list, cache);
+            // fill_weights_memory_from_disk(engine, op, shell_params, experts_list);
+
+            batch_mem_ptr = expert_index_buffer;
+            scratch.moe_fusion_wei_addr.weight[0] = shell_params.gate_w;
+            scratch.moe_fusion_wei_addr.scale[0] = shell_params.gate_s;
+            scratch.moe_fusion_wei_addr.zp[0] = shell_params.gate_z;
+
+            scratch.moe_fusion_wei_addr.weight[1] = shell_params.up_w;
+            scratch.moe_fusion_wei_addr.scale[1] = shell_params.up_s;
+            scratch.moe_fusion_wei_addr.zp[1] = shell_params.up_z;
+
+            scratch.moe_fusion_wei_addr.weight[2] = shell_params.down_w;
+            scratch.moe_fusion_wei_addr.scale[2] = shell_params.down_s;
+            scratch.moe_fusion_wei_addr.zp[2] = shell_params.down_z;
+        }
+
+        // std::cout << "wzx debug batch_mem_ptr2:" << std::endl;
+        // for (int i = 0; i < max_topk; i++) {
+        //     uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
+        //     std::cout << "[" << i << "]: " << p_data[i] << " ";
+        // }
+        // std::cout << std::endl;
         // gate
         const auto& mlp_gate_wei_mem = scratch.moe_fusion_wei_addr.weight[0];
         const auto& mlp_gate_scale_mem = scratch.moe_fusion_wei_addr.scale[0];
@@ -894,6 +1177,7 @@ public:
         const auto& mlp_down_scale_mem = scratch.moe_fusion_wei_addr.scale[2];
         const auto& mlp_down_zp_mem = scratch.moe_fusion_wei_addr.zp[2];
         event::ptr ret;
+        // std::cout << "wzx debug exec_single_batch max_topk:" << max_topk << std::endl;
 
         {
             // scratch.up = up(x) * silu(gate(x))
@@ -906,6 +1190,7 @@ public:
                 {static_cast<size_t>(max_topk), subgroup_size, static_cast<size_t>(_intermediate_size / N_BLOCK)},
                 {1, subgroup_size, SUBGROUP_NUM});
 
+            // std::cout << "wzx debug hit2" << std::endl;
             // scratch.y = down(scratch.up) * weight[expert_no]
             ret_event = execute_stage({ret_event},
                                       instance,
@@ -924,7 +1209,14 @@ public:
                                 {static_cast<size_t>(1), static_cast<size_t>(_hidden_size)},
                                 {1, std::min(max_work_group_size, size_t{1024})},
                                 instance.needs_completion_event());
+
+            auto& engine = instance.get_network().get_engine();
+            set_tracked_ptr(final_hidden_states_mem_ptr);
+            print_tracked_ptr(engine.get_service_stream());
+            std::cout << "wzx debug hit3" << std::endl;
         }
+        static int exec_count = 0;
+        std::cout << "wzx debug exec_single_batch count: " << exec_count++ << std::endl;
         return ret;
     }
 
@@ -998,6 +1290,14 @@ public:
                                              dnnl_weights[2].weight,
                                              dnnl_weights[2].scale,
                                              dnnl_weights[2].zp);
+
+        // each time dnnl_weights updated need refresh kernel cache in OTD mode, if not, the stream engine context and memory storage engine context will mismatch,
+        // dnnl kernel will report invalid_arguments and fail or compute wrong and output wrong tokens. if any perf concerns, need deep dive here.
+        if (cldnn::offload_to_disk) {
+            static auto otd_kernel = std::make_shared<onednn_kernel>();
+            otd_kernel = kernel;
+            return *otd_kernel;
+        }
         _kernels.add(key, kernel);
         return *_kernels.get(key);
     }
@@ -1025,15 +1325,18 @@ public:
         int max_topk = static_cast<int>(config.top_k);
         auto& cur_net = instance.get_network();
         auto& stream = cur_net.get_stream();
+        static LRUCache cache(cldnn::offload_to_disk, on_evict);
+        std::cout << "wzx debug offload_to_disk:" << cldnn::offload_to_disk << std::endl;
 
         auto [hidden_states_mem_ptr, hidden_states_layout] = get_input_info(instance, static_cast<size_t>(MOEInputIndex::HIDDEN_STATES));
         auto batch = static_cast<int>(hidden_states_layout.get_shape()[0]);
-
+        std::cout << "wzx debug batch:" << batch << std::endl;
         scratch_buffers scratch;
         prepare_internal_buffers(instance, scratch, batch);
-
+   
         // softmax+topk
         auto lws_size = cur_moe->_config.num_expert;
+        // std::cout << "wzx debug exec topk" << std::endl;
         auto topk_event = execute_stage(events,
                                         instance,
                                         *softmax_topk,
@@ -1041,16 +1344,28 @@ public:
                                         {scratch.topk_id, scratch.topk_weights},
                                         {static_cast<size_t>(batch), lws_size},
                                         {1, lws_size});
+        if (cldnn::offload_to_disk) {
+            topk_event->wait();
+        }
+        // std::cout << "wzx debug batch_mem_ptr1:" << std::endl;
+        // auto batch_mem_ptr = scratch.topk_id;
+        // for (int i = 0; i < max_topk; i++) {
+        //     uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
+        //     std::cout << "[" << i << "]: " << p_data[i] << " ";
+        // }
+        // std::cout << std::endl;
+        // std::cout << "wzx debug exec topk success" << std::endl;
 
         // Single batch is a special case, we don't need to do gather/scatter,
         // and we can apply optimal kernels against memory bound to improve performance.
         // It is very important for MoE's second token performance.
         if (batch == 1) {
-            return exec_single_batch({topk_event}, instance, scratch);
+            return exec_single_batch({topk_event}, instance, scratch, cache);
         }
 
         auto& engine = instance.get_network().get_engine();
         init_dnnl_weights(cur_moe, engine, scratch.moe_fusion_wei_addr);
+
         auto final_hidden_states_mem_ptr = instance.output_memory_ptr(0);
         auto final_hidden_states_layout = instance.get_output_layout(0);
 
@@ -1091,8 +1406,26 @@ public:
             if (can_skip_subgraph) {
                 continue;
             }
+            if (cldnn::offload_to_disk) {
+                auto& dnnl_weights = _dnnl_weights[expert_no];
+                auto params = get_params(instance, static_cast<uint32_t>(expert_no), cache);
+                // set_tracked_ptr(params.gate_s);
+                // print_tracked_ptr(stream);
+                #define CONVERT_DNNL(name, i)  \
+                    dnnl_weights[i].weight = convert2dnnl(params.name##_w, {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba); \
+                    dnnl_weights[i].scale = convert2dnnl(params.name##_s, \
+                                                        {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc}, \
+                                                        dnnl::memory::format_tag::ab); \
+                    dnnl_weights[i].zp = convert2dnnl(params.name##_z, \
+                                                    {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc}, \
+                                                    dnnl::memory::format_tag::ab);
+                CONVERT_DNNL(gate, 0)
+                CONVERT_DNNL(up, 1)
+                CONVERT_DNNL(down, 2)
+             
+                #undef CONVERT_DNNL
+            }
             auto& dnnl_weights = _dnnl_weights[expert_no];
-
             // expert_mask
             expert_mask_gpu& expert_mask_mem = scratch.expert_masks[expert_no];
             copy_expert_mask_to_gpu(stream, expert_mask, expert_no, expert_mask_mem);
@@ -1140,6 +1473,9 @@ public:
                                          {1, lws_size},
                                          instance.needs_completion_event());
         }
+        // std::cout << "wzx debug process final_hidden_states :" << std::endl;
+        // set_tracked_ptr(final_hidden_states_mem_ptr);
+        // print_tracked_ptr(stream);
 
         return result_event;
     }

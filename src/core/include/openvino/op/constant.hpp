@@ -438,6 +438,14 @@ public:
     /// @return Constant's strides in bytes.
     const Strides& get_strides() const;
 
+    size_t get_offset() const {
+        return m_offset;
+    }
+
+    // size_t get_const_size() const {
+    //     return m_const_size;
+    // }
+
 private:
     Constant(bool memset_allocation, const element::Type& type, const Shape& shape);
 
@@ -803,6 +811,8 @@ private:
     element::Type m_element_type{};
     Shape m_shape{};
     Strides m_byte_strides{};
+    size_t m_offset;
+    // size_t m_const_size;
     std::shared_ptr<ov::AlignedBuffer> m_data{};
     mutable std::atomic_bool m_all_elements_bitwise_identical{false};
     mutable std::atomic_bool m_all_elements_bitwise_identical_checked{false};

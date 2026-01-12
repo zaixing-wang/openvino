@@ -76,7 +76,9 @@ std::shared_ptr<ov::ICompiledModel> ov::IPlugin::compile_model(const std::string
                                                                const ov::AnyMap& properties) const {
     auto core = get_core();
     OPENVINO_ASSERT(core);
+    std::cout << "wzx debug begin read model" << std::endl;
     const auto model = core->read_model(model_path, {}, properties);
+    std::cout << "wzx debug end read model" << std::endl;
     auto local_properties = properties;
     if (!ov::is_virtual_device(get_device_name())) {
         CoreConfig::remove_core(local_properties);
