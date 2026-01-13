@@ -1090,7 +1090,9 @@ public:
                                         typed_primitive_inst<moe_3gemm_fused_compressed>& instance,
                                         scratch_buffers& scratch, LRUCache& cache) {
         if(cldnn::offload_to_disk) {
-            sleep(2);
+            auto& cur_net = instance.get_network();
+            auto& stream = cur_net.get_stream();
+            stream.finish();
         }
         auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
         int max_topk = static_cast<int>(cur_moe->_config.top_k);
@@ -1117,7 +1119,7 @@ public:
             static cldnn::memory::ptr base_mem;
             static cldnn::moe_weights shell_params;
             static cldnn::memory::ptr expert_index_buffer = nullptr;
-            events[0]->wait();
+            // events[0]->wait();
             auto& op = cur_moe->_op;
             auto& engine = instance.get_network().get_engine();
             uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
@@ -1344,9 +1346,9 @@ public:
                                         {scratch.topk_id, scratch.topk_weights},
                                         {static_cast<size_t>(batch), lws_size},
                                         {1, lws_size});
-        if (cldnn::offload_to_disk) {
-            topk_event->wait();
-        }
+        // if (cldnn::offload_to_disk) {
+        //     topk_event->wait();
+        // }
         // std::cout << "wzx debug batch_mem_ptr1:" << std::endl;
         // auto batch_mem_ptr = scratch.topk_id;
         // for (int i = 0; i < max_topk; i++) {
