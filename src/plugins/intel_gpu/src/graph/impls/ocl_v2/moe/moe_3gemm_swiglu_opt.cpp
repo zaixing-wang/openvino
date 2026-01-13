@@ -1108,18 +1108,10 @@ public:
         const size_t subgroup_size = instance.get_impl_params()->get_device_info().arch >= gpu_arch::xe2 ? 32 : 16;
         const size_t max_work_group_size = instance.get_impl_params()->get_device_info().max_work_group_size;
 
-        std::cout << "wzx debug batch_mem_ptr1:" << std::endl;
-        for (int i = 0; i < max_topk; i++) {
-            uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
-            std::cout << "[" << i << "]: " << p_data[i] << " ";
-        }
-        std::cout << std::endl;
- 
         if(cldnn::offload_to_disk) {
             static cldnn::memory::ptr base_mem;
             static cldnn::moe_weights shell_params;
             static cldnn::memory::ptr expert_index_buffer = nullptr;
-            // events[0]->wait();
             auto& op = cur_moe->_op;
             auto& engine = instance.get_network().get_engine();
             uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
@@ -1158,12 +1150,6 @@ public:
             scratch.moe_fusion_wei_addr.zp[2] = shell_params.down_z;
         }
 
-        // std::cout << "wzx debug batch_mem_ptr2:" << std::endl;
-        // for (int i = 0; i < max_topk; i++) {
-        //     uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
-        //     std::cout << "[" << i << "]: " << p_data[i] << " ";
-        // }
-        // std::cout << std::endl;
         // gate
         const auto& mlp_gate_wei_mem = scratch.moe_fusion_wei_addr.weight[0];
         const auto& mlp_gate_scale_mem = scratch.moe_fusion_wei_addr.scale[0];
@@ -1179,7 +1165,6 @@ public:
         const auto& mlp_down_scale_mem = scratch.moe_fusion_wei_addr.scale[2];
         const auto& mlp_down_zp_mem = scratch.moe_fusion_wei_addr.zp[2];
         event::ptr ret;
-        // std::cout << "wzx debug exec_single_batch max_topk:" << max_topk << std::endl;
 
         {
             // scratch.up = up(x) * silu(gate(x))
@@ -1192,7 +1177,6 @@ public:
                 {static_cast<size_t>(max_topk), subgroup_size, static_cast<size_t>(_intermediate_size / N_BLOCK)},
                 {1, subgroup_size, SUBGROUP_NUM});
 
-            // std::cout << "wzx debug hit2" << std::endl;
             // scratch.y = down(scratch.up) * weight[expert_no]
             ret_event = execute_stage({ret_event},
                                       instance,
@@ -1211,14 +1195,7 @@ public:
                                 {static_cast<size_t>(1), static_cast<size_t>(_hidden_size)},
                                 {1, std::min(max_work_group_size, size_t{1024})},
                                 instance.needs_completion_event());
-
-            auto& engine = instance.get_network().get_engine();
-            set_tracked_ptr(final_hidden_states_mem_ptr);
-            print_tracked_ptr(engine.get_service_stream());
-            std::cout << "wzx debug hit3" << std::endl;
         }
-        static int exec_count = 0;
-        std::cout << "wzx debug exec_single_batch count: " << exec_count++ << std::endl;
         return ret;
     }
 
@@ -1328,17 +1305,14 @@ public:
         auto& cur_net = instance.get_network();
         auto& stream = cur_net.get_stream();
         static LRUCache cache(cldnn::offload_to_disk, on_evict);
-        std::cout << "wzx debug offload_to_disk:" << cldnn::offload_to_disk << std::endl;
 
         auto [hidden_states_mem_ptr, hidden_states_layout] = get_input_info(instance, static_cast<size_t>(MOEInputIndex::HIDDEN_STATES));
         auto batch = static_cast<int>(hidden_states_layout.get_shape()[0]);
-        std::cout << "wzx debug batch:" << batch << std::endl;
         scratch_buffers scratch;
         prepare_internal_buffers(instance, scratch, batch);
    
         // softmax+topk
         auto lws_size = cur_moe->_config.num_expert;
-        // std::cout << "wzx debug exec topk" << std::endl;
         auto topk_event = execute_stage(events,
                                         instance,
                                         *softmax_topk,
@@ -1346,17 +1320,6 @@ public:
                                         {scratch.topk_id, scratch.topk_weights},
                                         {static_cast<size_t>(batch), lws_size},
                                         {1, lws_size});
-        // if (cldnn::offload_to_disk) {
-        //     topk_event->wait();
-        // }
-        // std::cout << "wzx debug batch_mem_ptr1:" << std::endl;
-        // auto batch_mem_ptr = scratch.topk_id;
-        // for (int i = 0; i < max_topk; i++) {
-        //     uint32_t* p_data = (uint32_t*)batch_mem_ptr->buffer_ptr();
-        //     std::cout << "[" << i << "]: " << p_data[i] << " ";
-        // }
-        // std::cout << std::endl;
-        // std::cout << "wzx debug exec topk success" << std::endl;
 
         // Single batch is a special case, we don't need to do gather/scatter,
         // and we can apply optimal kernels against memory bound to improve performance.
@@ -1475,10 +1438,6 @@ public:
                                          {1, lws_size},
                                          instance.needs_completion_event());
         }
-        // std::cout << "wzx debug process final_hidden_states :" << std::endl;
-        // set_tracked_ptr(final_hidden_states_mem_ptr);
-        // print_tracked_ptr(stream);
-
         return result_event;
     }
 };
