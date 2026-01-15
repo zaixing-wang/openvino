@@ -3,6 +3,9 @@
 #include <unordered_map>
 #include <list>
 #include <utility>
+#include "intel_gpu/runtime/engine.hpp"
+#include <memory>
+#include "intel_gpu/primitives/moe_3gemm_fused_compressed.hpp"
 
 class LRUCache {
 public:
@@ -13,17 +16,29 @@ public:
         REFRESH
     };
 
-    LRUCache(size_t max_total_experts, EvictCallback cb = nullptr);
+    LRUCache(size_t max_total_experts, size_t per_expert_size, EvictCallback cb = nullptr);
 
     NodeAction insert_or_refresh(size_t layer, size_t expert, void* addr, void* params = nullptr);
 
-    void* get_expert_addr(size_t layer, size_t expert);
-    void* get_expert_params(size_t layer, size_t expert);
+    std::pair<size_t, bool> get_lru_item(size_t layer, size_t expert);
+    size_t get_total_experts() const { return m_total_experts; }
 
     void evict_one();
 
     size_t size() const { return m_total_experts; }
+    std::pair<size_t, bool> get_item(size_t layer, size_t expert);
 
+    void set_filled(size_t lru_expert_no) {
+        if (lru_expert_no > m_filled_list.size()) {
+            std::cout << "lru_expert_no should be smaller than max_total_experts!" << std::endl;
+            return;
+        }
+        m_filled_list[lru_expert_no] = true;
+    }
+
+
+    cldnn::memory::ptr m_base_addr;
+    cldnn::moe_weights m_params;
 private:
     struct Key {
         size_t layer;
@@ -42,15 +57,16 @@ private:
     struct Node {
         size_t layer;
         size_t expert;
-        void* addr;
-        void* params;
+        size_t lru_expert_no;
     };
 
     size_t m_max_total_experts;
+    size_t m_per_expert_size;
     size_t m_total_experts;
     EvictCallback m_on_evict;
 
     std::list<Node> m_list;
+    std::vector<bool> m_filled_list;
     std::unordered_map<Key, std::list<Node>::iterator, KeyHash> m_map;
 
     void move_to_end(std::list<Node>::iterator it);

@@ -28,10 +28,10 @@ struct moe_weights {
     cldnn::memory::ptr down_z = nullptr;
 };
 
-[[maybe_unused]] static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base, cldnn::moe_weights& pw, const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op, size_t num_expert = 0) {
-    size_t weights_offset = 0;
+[[maybe_unused]] static void create_weights_memory(cldnn::engine& engine, cldnn::memory::ptr base, cldnn::moe_weights& pw, 
+    const std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed>& op, size_t num_expert = 0, size_t weights_offset = 0) {
     auto weights = op->get_weights();
-    auto config = op->get_config();
+    auto config = op->get_config(); 
     auto alloc = [&] (ov::Shape shape, ov::element::Type type) {
         auto format = cldnn::format::get_default_format(shape.size());
         cldnn::data_types out_dtype = cldnn::element_type_to_data_type(type);
@@ -103,7 +103,7 @@ static size_t get_weights_size(const std::shared_ptr<MOE3GemmFusedCompressed>& o
     fill(op->get_weights().ups[2], wei_mem.up_z);                                                 
     fill(op->get_weights().downs[1], wei_mem.down_s);
     fill(op->get_weights().downs[2], wei_mem.down_z); 
-}
+ }
 
 
 
