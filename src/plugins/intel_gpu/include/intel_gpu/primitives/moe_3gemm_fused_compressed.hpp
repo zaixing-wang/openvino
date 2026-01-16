@@ -15,7 +15,7 @@ namespace cldnn {
 using MOE3GemmFusedCompressed = ov::intel_gpu::op::MOE3GemmFusedCompressed;
 using ProgramBuilder = ov::intel_gpu::ProgramBuilder;
 extern std::string file_path;
-extern size_t offload_to_disk;
+extern size_t lru_expert_num;
 struct moe_weights {
     cldnn::memory::ptr gate_w = nullptr;
     cldnn::memory::ptr gate_s = nullptr;

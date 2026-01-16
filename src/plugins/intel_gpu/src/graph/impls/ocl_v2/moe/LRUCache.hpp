@@ -16,7 +16,7 @@ public:
         REFRESH
     };
 
-    LRUCache(size_t max_total_experts, size_t per_expert_size, EvictCallback cb = nullptr);
+    LRUCache(size_t max_total_experts, EvictCallback cb = nullptr);
 
     NodeAction insert_or_refresh(size_t layer, size_t expert, void* addr, void* params = nullptr);
 
@@ -39,6 +39,7 @@ public:
 
     cldnn::memory::ptr m_base_addr;
     cldnn::moe_weights m_params;
+    bool m_initialized = false;
 private:
     struct Key {
         size_t layer;
@@ -63,6 +64,7 @@ private:
     size_t m_max_total_experts;
     size_t m_per_expert_size;
     size_t m_total_experts;
+    size_t m_to_filled_lru_expert_no;
     EvictCallback m_on_evict;
 
     std::list<Node> m_list;

@@ -22,7 +22,7 @@
 
 namespace cldnn {
     std::string file_path;
-    size_t offload_to_disk;
+    size_t lru_expert_num;
 }
 
 namespace ov {
@@ -48,15 +48,15 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
     const std::string layerName = layer_type_name_ID(op);
     auto& engine = p.get_engine();
     const auto& model = p.get_model();
-    cldnn::offload_to_disk = ov::util::getenv_int("OTD", 0);
-    if (cldnn::offload_to_disk) {
+    cldnn::lru_expert_num = ov::util::getenv_int("OTD", 0);
+    if (cldnn::lru_expert_num) {
         cldnn::file_path = model->get_rt_info()["__weights_path"].as<std::string>();
         // std::cout << "wzx debug model file_path:" << file_path << std::endl;
     }
     cldnn::moe_weights moe_w;
     auto base_mem = cldnn::pre_allocate_weights(engine, op);
     cldnn::create_weights_memory(engine, base_mem, moe_w, op);
-    if (!cldnn::offload_to_disk) {
+    if (!cldnn::lru_expert_num) {
         cldnn::fill_weights_memory(engine, op, moe_w);
     }
     
