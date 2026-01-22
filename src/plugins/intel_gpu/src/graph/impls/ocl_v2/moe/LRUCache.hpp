@@ -17,6 +17,12 @@ public:
     };
 
     LRUCache(size_t max_total_experts, EvictCallback cb = nullptr);
+    ~LRUCache() {
+            std::cerr << "[DTOR] LRUCache begin\n";
+            std::cerr << "  m_base_addr use_count = "
+                      << (m_base_addr ? m_base_addr.use_count() : 0)
+                      << std::endl;
+    }
 
     NodeAction insert_or_refresh(size_t layer, size_t expert, void* addr, void* params = nullptr);
 
@@ -29,7 +35,7 @@ public:
     std::pair<size_t, bool> get_item(size_t layer, size_t expert);
 
     void set_filled(size_t lru_expert_no) {
-        if (lru_expert_no > m_filled_list.size()) {
+        if (lru_expert_no >= m_filled_list.size()) {
             std::cout << "lru_expert_no should be smaller than max_total_experts!" << std::endl;
             return;
         }

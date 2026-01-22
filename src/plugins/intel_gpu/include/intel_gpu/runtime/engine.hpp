@@ -35,7 +35,10 @@ using primitive_id = std::string;
 class engine {
 public:
     /// Default destructor
-    virtual ~engine() = default;
+    // virtual ~engine() = default;
+    virtual ~engine() {
+        std::cerr << "[DTOR] engine destroyed\n";
+    }
 
     /// Returns type of the engine
     virtual engine_types type() const = 0;

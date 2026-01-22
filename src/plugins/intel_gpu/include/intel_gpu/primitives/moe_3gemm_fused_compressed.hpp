@@ -46,15 +46,16 @@ struct moe_weights {
         num_expert = config.num_expert;
     }
     pw.gate_w = alloc({num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
-    pw.up_w = alloc({num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
-    pw.down_w = alloc({num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
-
-    pw.gate_s = alloc({num_expert, config.inter_size, group_num}, weights.scale_type);
     pw.gate_z = alloc({num_expert, config.inter_size, group_num}, weights.zp_type);
-    pw.up_s = alloc({num_expert, config.inter_size, group_num}, weights.scale_type);
+    pw.gate_s = alloc({num_expert, config.inter_size, group_num}, weights.scale_type);
+
+    pw.up_w = alloc({num_expert, config.inter_size, config.hidden_size}, weights.weight_type);
     pw.up_z = alloc({num_expert, config.inter_size,  group_num}, weights.zp_type);
-    pw.down_s = alloc({num_expert, config.hidden_size, group_num2}, weights.scale_type);
+    pw.up_s = alloc({num_expert, config.inter_size, group_num}, weights.scale_type);
+
+    pw.down_w = alloc({num_expert, config.hidden_size, config.inter_size}, weights.weight_type);
     pw.down_z = alloc({num_expert, config.hidden_size, group_num2}, weights.zp_type);
+    pw.down_s = alloc({num_expert, config.hidden_size, group_num2}, weights.scale_type);
 }
 
 static size_t get_weights_size(const std::shared_ptr<MOE3GemmFusedCompressed>& op) {
@@ -80,7 +81,7 @@ static size_t get_weights_size(const std::shared_ptr<MOE3GemmFusedCompressed>& o
     return mem;
 }
  
-[[maybe_unused]] static void fill_weights_memory(cldnn::engine& engine, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem) {
+[[maybe_unused]] static void  fill_weights_memory(cldnn::engine& engine, const std::shared_ptr<MOE3GemmFusedCompressed>& op, cldnn::moe_weights& wei_mem) {
     auto& stream = engine.get_service_stream();
     auto fill = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem) {
         if (!mem)
@@ -140,6 +141,7 @@ struct moe_3gemm_fused_compressed : public primitive_base<moe_3gemm_fused_compre
     std::shared_ptr<ov::intel_gpu::op::MOE3GemmFusedCompressed> _op;
     cldnn::memory::ptr _base;
     moe_weights _weights;
+
     bool operator==(const primitive& rhs) const override {
         if (!compare_common_params(rhs))
             return false;
