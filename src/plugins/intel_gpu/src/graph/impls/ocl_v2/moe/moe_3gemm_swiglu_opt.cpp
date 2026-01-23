@@ -47,6 +47,7 @@ using namespace ov::intel_gpu::ocl;
 // 全局计时器变量
 std::chrono::high_resolution_clock::time_point global_start_time;
 std::chrono::high_resolution_clock::time_point global_temp_time;
+// std::map<cldnn::primitive_id, LRUCache> multi_layer_caches;
 
 void start_timer() {
     global_start_time = std::chrono::high_resolution_clock::now();
@@ -611,6 +612,8 @@ public:
         memory::ptr input_routing_weights;
         memory::ptr input_router_topk_idx;
         moe_fusion_weights_base_addr moe_fusion_wei_addr;
+        memory::ptr _expert_index_buffer;
+        bool _index_initialized = false;
     };
 
     std::vector<std::vector<dnnl_weights>> _dnnl_weights;
@@ -912,7 +915,7 @@ public:
             experts_list_single.push_back(expert);
             std::vector<uint32_t> lru_experts_list_single;
             lru_experts_list_single.push_back(item.first);
-            fill_weights_memory_from_disk(engine, op, cache.m_params, experts_list_single, lru_experts_list_single);
+            fill_weights_memory_from_disk(engine, op, instance._weights, experts_list_single, lru_experts_list_single);
             cache.set_filled(item.first);
         }
         return item.first;
@@ -929,7 +932,7 @@ public:
             cldnn::memory_ptr src, dst;
             size_t sz;
             #define COPY_BUF(name)                                                                        \
-                    dst = cache.m_params.name;                                                          \
+                    dst = instance._weights.name;                                                          \
                     src = tmp_weights.name;                                                             \
                     sz = src->size() / num_expert;                                                      \
                     dst->copy_from(engine.get_service_stream(), *src, expert * sz, item.first * sz, sz, true);
@@ -1169,28 +1172,28 @@ public:
         const size_t max_work_group_size = instance.get_impl_params()->get_device_info().max_work_group_size;
 
         if(cldnn::lru_expert_num) {
-            cldnn::moe_weights shell_params = cache.m_params;
-            static cldnn::memory::ptr expert_index_buffer = nullptr;
+            cldnn::moe_weights shell_params = instance._weights;
             auto& engine = instance.get_network().get_engine();
             uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
             std::vector<uint32_t> experts_list;
             for (int i = 0; i < max_topk; i++) {
                 experts_list.push_back(*p_expert++);
             }
-            static bool initialized = false;
-            if (!initialized) {
+            if (!scratch._index_initialized) {
                 size_t experts_index_size = 4 * max_topk; // each expert has 4 bytes
                 auto layout_expert = cldnn::layout({1, 1, 1, static_cast<ov::Dimension::value_type>(experts_index_size)}, ov::element::i8, cldnn::format::bfyx);
-                expert_index_buffer = engine.allocate_memory(layout_expert, allocation_type::usm_host, false);
-                initialized = true;
+                // auto alloc_type = engine.get_preferred_memory_allocation_type(false);
+                scratch._expert_index_buffer = engine.allocate_memory(layout_expert, allocation_type::usm_host, false);
+                // instance._expert_index_buffer = engine.allocate_memory(layout_expert, alloc_type, false);
+                scratch._index_initialized = true;
             } 
-            uint32_t* p_expert_index = (uint32_t*)expert_index_buffer->buffer_ptr();
+            uint32_t* p_expert_index = (uint32_t*)scratch._expert_index_buffer->buffer_ptr();
             for (int i = 0; i < max_topk; i++) {
                 auto expert_no = experts_list[i];
                 auto lru_expert_no = get_lru_expert_no(instance, static_cast<uint32_t>(expert_no), cache);
                 *p_expert_index++ = lru_expert_no;  // update batch_mem_ptr as re-map
             }
-            batch_mem_ptr = expert_index_buffer;
+            batch_mem_ptr = scratch._expert_index_buffer;
             scratch.moe_fusion_wei_addr.weight[0] = shell_params.gate_w;
             scratch.moe_fusion_wei_addr.scale[0] = shell_params.gate_s;
             scratch.moe_fusion_wei_addr.zp[0] = shell_params.gate_z;
@@ -1362,10 +1365,8 @@ public:
         auto& cur_net = instance.get_network();
         auto& stream = cur_net.get_stream();
         // std::cout << "wzx debug lru_expert_num:" << cldnn::lru_expert_num << std::endl;
-        // static std::map<size_t, LRUCache> multi_layer_caches;
-        // size_t layer = get_layer(instance);
-        static std::map<primitive_id, LRUCache> multi_layer_caches;
         // std::cout << "wzx debug moe id:" << cur_moe->id << ", layer:" << layer << std::endl;
+        static std::map<cldnn::primitive_id, LRUCache> multi_layer_caches;
         auto [it, inserted] = multi_layer_caches.try_emplace(cur_moe->id, cldnn::lru_expert_num);
         auto& cache = it->second;
         cldnn::memory::ptr tmp_addr;
@@ -1381,8 +1382,8 @@ public:
                 cldnn::fill_weights_memory(cur_net.get_engine(), op, tmp_weights);
             }
             if (!cache.m_initialized) {
-                cache.m_base_addr = cldnn::pre_allocate_weights(cur_net.get_engine(), op, cldnn::lru_expert_num);
-                cldnn::create_weights_memory(cur_net.get_engine(), cache.m_base_addr, cache.m_params, op, cldnn::lru_expert_num);
+                instance._base = cldnn::pre_allocate_weights(cur_net.get_engine(), op, cldnn::lru_expert_num);
+                cldnn::create_weights_memory(cur_net.get_engine(), instance._base, instance._weights, op, cldnn::lru_expert_num);
                 cache.m_initialized = true;
             }
         }
@@ -1457,7 +1458,7 @@ public:
                 // print_elapsed("before convert dnnl weights for expert " + std::to_string(expert_no));
                 auto& dnnl_weights = _dnnl_weights[expert_no];
                 auto  lru_expert_no = get_lru_expert_no_v2(instance, static_cast<uint32_t>(expert_no), cache, tmp_weights);
-                auto& params = cache.m_params;
+                auto& params = instance._weights;
 
                 // auto&  params = tmp_weights;
                 // set_tracked_ptr(params.gate_s);

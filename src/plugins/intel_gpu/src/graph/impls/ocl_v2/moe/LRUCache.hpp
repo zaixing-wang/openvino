@@ -17,13 +17,6 @@ public:
     };
 
     LRUCache(size_t max_total_experts, EvictCallback cb = nullptr);
-    ~LRUCache() {
-            std::cerr << "[DTOR] LRUCache begin\n";
-            std::cerr << "  m_base_addr use_count = "
-                      << (m_base_addr ? m_base_addr.use_count() : 0)
-                      << std::endl;
-    }
-
     NodeAction insert_or_refresh(size_t layer, size_t expert, void* addr, void* params = nullptr);
 
     std::pair<size_t, bool> get_lru_item(size_t layer, size_t expert);
@@ -42,9 +35,6 @@ public:
         m_filled_list[lru_expert_no] = true;
     }
 
-
-    cldnn::memory::ptr m_base_addr;
-    cldnn::moe_weights m_params;
     bool m_initialized = false;
 private:
     struct Key {

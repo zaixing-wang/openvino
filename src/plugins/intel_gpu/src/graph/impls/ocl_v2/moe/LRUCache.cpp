@@ -49,20 +49,3 @@ std::pair<size_t, bool> LRUCache::get_lru_item(size_t layer, size_t expert) {
        return { it->second->lru_expert_no, m_filled_list[it->second->lru_expert_no] };
    }
 }
-
-
-// void* LRUCache::get_expert_addr(size_t layer, size_t expert) {
-//     Key key{layer, expert};
-//     auto it = m_map.find(key);
-//     if (it == m_map.end()) return nullptr;
-//     move_to_end(it->second);
-//     return it->second->addr;
-// }
-
-// void* LRUCache::get_expert_params(size_t layer, size_t expert) {
-//     Key key{layer, expert};
-//     auto it = m_map.find(key);
-//     if (it == m_map.end()) return nullptr;
-//     move_to_end(it->second);
-//     return it->second->params;
-// }
