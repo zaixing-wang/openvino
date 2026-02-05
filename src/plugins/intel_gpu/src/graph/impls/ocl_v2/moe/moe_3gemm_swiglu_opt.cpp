@@ -4,6 +4,8 @@
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
 #include "moe_3gemm_swiglu_opt.hpp"
+#include "openvino/runtime/shared_buffer.hpp"
+#include "openvino/util/mmap_object.hpp"
 #include "LRUCache.hpp"
 #    include <initializer_list>
 #    include <oneapi/dnnl/dnnl.hpp>
@@ -915,7 +917,7 @@ public:
             experts_list_single.push_back(expert);
             std::vector<uint32_t> lru_experts_list_single;
             lru_experts_list_single.push_back(item.first);
-            fill_weights_memory_from_disk(engine, op, instance._weights, experts_list_single, lru_experts_list_single);
+            fill_weights_memory_from_disk_v2(engine, op, instance._weights, experts_list_single, lru_experts_list_single);
             cache.set_filled(item.first);
         }
         return item.first;
@@ -1095,7 +1097,6 @@ public:
             auto const_bytes = layout.bytes_count();
 
             auto offset = op->get_offset();
-            // std::cout << "wzx debug fill_from_disk offset=" << offset << ", const_bytes=" << const_bytes << std::endl;
             void* pBase = alloc_rw_memory(const_bytes);
             read_from_file(cldnn::file_path.c_str(), pBase, const_bytes, offset);
             void* data = pBase;
@@ -1122,32 +1123,74 @@ public:
         }
     }
 
-    static void fill_weights_memory_from_disk_v2(cldnn::engine& engine, const std::shared_ptr<MOE3GemmFusedCompressed>& op, 
-        cldnn::moe_weights& wei_mem) {
-        auto fill_from_disk = [&] (const std::shared_ptr<ov::op::v0::Constant>& op, cldnn::memory_ptr mem, size_t weights_size) {
-            if (!mem)
-                return;
-            ov::Shape const_shape = op->get_shape();
-            auto constFormat = cldnn::format::get_default_format(const_shape.size());
-            cldnn::data_types out_dtype = cldnn::element_type_to_data_type(op->get_output_element_type(0));
-            auto layout = cldnn::layout(const_shape, out_dtype, constFormat);
+    static std::shared_ptr<ov::MappedMemory> get_mapped_memory() {
+        static std::once_flag init_flag;
+        static std::shared_ptr<ov::MappedMemory> mapped_memory;
 
-            // auto data = op->get_data_ptr<uint8_t>();
-            
-            auto const_bytes = weights_size;
-
-            auto offset = op->get_offset();
-            // std::cout << "wzx debug fill_from_disk offset=" << offset << ", const_bytes=" << const_bytes << std::endl;
-            void* pBase = alloc_rw_memory(const_bytes);
-            read_from_file(cldnn::file_path.c_str(), pBase, const_bytes, offset);
-            void* data = pBase;
-
-            mem->copy_from(engine.get_service_stream(), data, 0, 0, const_bytes, true);
-
-            free_rw_memory(pBase, const_bytes);
-        };
-        fill_from_disk(op->get_weights().gates[0], wei_mem.gate_w, cldnn::get_weights_size(op));  
+        std::call_once(init_flag, [] {
+            mapped_memory = ov::load_mmap_object(cldnn::file_path.c_str());
+            if (!mapped_memory) {
+                throw std::runtime_error("Failed to mmap object");
+            }
+        });
+        return mapped_memory;
     }
+
+    static void fill_weights_memory_from_disk_v2(cldnn::engine& engine, const std::shared_ptr<MOE3GemmFusedCompressed>& op, 
+        cldnn::moe_weights& wei_mem, const std::vector<uint32_t>& experts_list, const std::vector<uint32_t>& lru_experts) {
+        auto num_expert = op->get_config().num_expert;
+        auto mapped_memory = get_mapped_memory();
+
+        auto fill_from_disk = [&] (const std::shared_ptr<ov::op::v0::Constant>& const_op,
+                               cldnn::memory_ptr mem,
+                               size_t expert_no,
+                               size_t lru_expert_no) {
+            if (!mem || !const_op)
+                return;
+
+            ov::Shape shape = const_op->get_shape();
+            auto format = cldnn::format::get_default_format(shape.size());
+            auto dtype = cldnn::element_type_to_data_type(const_op->get_output_element_type(0));
+            cldnn::layout layout(shape, dtype, format);
+
+            size_t total_bytes = layout.bytes_count();
+            size_t per_expert_size = total_bytes / num_expert;
+            size_t base_offset = const_op->get_offset();
+            size_t src_offset = base_offset + expert_no * per_expert_size;
+
+            // ---- 1. mmap source (read-only) ----
+            const uint8_t* mmap_src =
+                reinterpret_cast<const uint8_t*>(mapped_memory->data()) + src_offset;
+
+            // ---- 2. bounce buffer (GPU-safe host memory) ----
+            std::unique_ptr<uint8_t[]> bounce(new uint8_t[per_expert_size]);
+
+            std::memcpy(bounce.get(), mmap_src, per_expert_size);
+
+            // ---- 3. GPU copy (safe) ----
+            mem->copy_from(engine.get_service_stream(),
+                           bounce.get(),
+                           0,  // src offset
+                           lru_expert_no * per_expert_size,
+                           per_expert_size,
+                           true);
+        };
+
+        size_t i = 0; 
+        for (uint32_t expert: experts_list) {
+            fill_from_disk(op->get_weights().gates[0], wei_mem.gate_w, expert, lru_experts[i]);  
+            fill_from_disk(op->get_weights().ups[0], wei_mem.up_w, expert, lru_experts[i]);                                                 
+            fill_from_disk(op->get_weights().downs[0], wei_mem.down_w, expert, lru_experts[i]);
+            fill_from_disk(op->get_weights().gates[1],  wei_mem.gate_s, expert, lru_experts[i] );                                                 
+            fill_from_disk(op->get_weights().gates[2], wei_mem.gate_z, expert, lru_experts[i] );                                                 
+            fill_from_disk(op->get_weights().ups[1], wei_mem.up_s, expert, lru_experts[i]);                                                 
+            fill_from_disk(op->get_weights().ups[2], wei_mem.up_z, expert, lru_experts[i]);                                                 
+            fill_from_disk(op->get_weights().downs[1], wei_mem.down_s, expert, lru_experts[i]);
+            fill_from_disk(op->get_weights().downs[2], wei_mem.down_z, expert, lru_experts[i]); 
+            i++;
+        }
+    }
+
 
     cldnn::event::ptr exec_single_batch(const std::vector<cldnn::event::ptr>& events,
                                         typed_primitive_inst<moe_3gemm_fused_compressed>& instance,
@@ -1378,7 +1421,6 @@ public:
             if (batch > 1) {
                 tmp_addr = cldnn::pre_allocate_weights(cur_net.get_engine(), op);
                 cldnn::create_weights_memory(cur_net.get_engine(), tmp_addr, tmp_weights, op);
-                // fill_weights_memory_from_disk_v2(cur_net.get_engine(), op, tmp_weights);
                 cldnn::fill_weights_memory(cur_net.get_engine(), op, tmp_weights);
             }
             if (!cache.m_initialized) {

@@ -171,10 +171,13 @@ std::shared_ptr<ov::Model> Plugin::clone_and_transform_model(const std::shared_p
     // Set weightless cache attribute only for non IR (e.g. onnxruntime) models
     // This is a temporary solution. A common way of handling weightless caching will be defined later.
     if (config_copy.get_enable_weightless()) {
+        std::cout << "wzx debug hit enable weightless transform" << std::endl;
         const std::string& weights_path = config.get_weights_path();
 
         if (!ov::util::validate_weights_path(weights_path) && !is_weightless_cache_attributes_set(cloned_model))
             set_weightless_cache_attributes(cloned_model);
+    } else {
+        std::cout << "wzx debug hit disable weightless transform" << std::endl;
     }
 
     transform_model(cloned_model, config_copy, context);

@@ -282,6 +282,7 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
     prim->origin_op_type_name = op.get_type_name();
 
     if (this->m_config.get_enable_weightless()) {
+        std::cout << "wzx debug hit enable weightless add_primitive" << std::endl;
         if (auto data_prim = dynamic_cast<cldnn::data*>(prim.get())) {
             auto rt_info = op.get_rt_info();
 
@@ -295,6 +296,8 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
                                                          op.get_output_shape(0));
             }
         }
+    } else {
+        std::cout << "wzx debug hit disable weightless add_primitive" << std::endl;
     }
 
     bool should_profile = prim->type != cldnn::mutable_data::type_id() &&

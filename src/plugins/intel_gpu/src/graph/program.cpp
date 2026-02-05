@@ -1931,6 +1931,7 @@ void program::load(cldnn::BinaryInputBuffer& ib,
     std::shared_ptr<WeightsMemory> weights_memory = nullptr;
     std::string weights_path = _config.get_weights_path();
     if (_config.get_enable_weightless()) {
+        std::cout << "wzx debug hit enable weightless load" << std::endl;
         if (model_ptr) {
             if (cache_attr_map) {
                 weights_memory = std::make_shared<WeightsMemory>(model_ptr, cache_attr_map);
@@ -1943,6 +1944,8 @@ void program::load(cldnn::BinaryInputBuffer& ib,
         } else {
             OPENVINO_THROW("Weights path or model is required for cache mode OPTIMIZE_SIZE");
         }
+    } else {
+        std::cout << "wzx debug hit disable weightless load" << std::endl;
     }
 
     size_t num_nodes;
