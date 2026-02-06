@@ -11,6 +11,8 @@
 
 namespace cldnn {
 using MOE3GemmFusedCompressed = ov::intel_gpu::op::MOE3GemmFusedCompressed;
+extern std::string file_path;
+extern size_t lru_expert_num;
 
 /// @brief moe compressed primitive
 /// @details Performs moe compressed
