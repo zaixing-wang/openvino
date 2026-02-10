@@ -197,6 +197,7 @@ public:
     const std::vector<std::pair<const primitive_inst*, int32_t>>& dependencies() const {
         return reinterpret_cast<std::vector<std::pair<const primitive_inst*, int32_t>> const&>(_deps);
     }
+    bool is_weightless_output(size_t i) const;
 
     memory& dep_memory(size_t index) const {
         auto dep = dependencies().at(index);
