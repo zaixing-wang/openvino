@@ -294,7 +294,7 @@ void ProgramBuilder::add_primitive(const ov::Node& op, std::shared_ptr<cldnn::pr
                                                          op.get_output_element_type(0),
                                                          op.get_output_shape(0));
             }
-        }
+        } 
     }
 
     bool should_profile = prim->type != cldnn::mutable_data::type_id() &&

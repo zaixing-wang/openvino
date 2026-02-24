@@ -431,6 +431,8 @@ std::shared_ptr<ov::ICompiledModel> Plugin::import_model(std::istream& model,
                 return nullptr;
             }
         }
+    } else {
+        std::cout << "wzx debug not hit ov::util::is_weightless" << std::endl;
     }
 
     return std::make_shared<CompiledModel>(ib, shared_from_this(), context_impl, config, loaded_from_cache);

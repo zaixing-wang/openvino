@@ -14,6 +14,7 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <execinfo.h>
 
 // NOTE: Due to buggy scope transition of warnings we need to disable warning in place of use/instantation
 //       of some types (even though we already disabled them in scope of definition of these types).
@@ -142,7 +143,22 @@ bool ocl_engine::check_allocatable(const layout& layout, allocation_type type) {
     return true;
 }
 
+// static void dump_stack() {
+//     void* array[30];
+//     int size = backtrace(array, 30);
+//     char** symbols = backtrace_symbols(array, size);
+
+//     std::cout << "=== GPU USM allocation stack ===\n";
+//     for (int i = 0; i < size; i++) {
+//         std::cout << symbols[i] << "\n";
+//     }
+//     std::cout << "===============================\n";
+
+//     free(symbols);
+// }
+
 memory::ptr ocl_engine::allocate_memory(const layout& layout, allocation_type type, bool reset) {
+    // dump_stack();
     OPENVINO_ASSERT(!layout.is_dynamic() || layout.has_upper_bound(), "[GPU] Can't allocate memory for dynamic layout");
 
     check_allocatable(layout, type);

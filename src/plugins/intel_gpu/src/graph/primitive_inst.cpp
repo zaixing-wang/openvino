@@ -2656,6 +2656,28 @@ memory::ptr primitive_inst::allocate_output(engine& _engine,
     }
 }
 
+bool primitive_inst::is_weightless_output(size_t i) const {
+    auto& node = get_node();
+    if (!node.is_type<data>()) {
+        std::cout << "Node " << node.id()  << " type: " << node.get_primitive()->type_string() << "\n";
+        std::cout << "Node " << node.id() << " is not a data primitive\n";
+        return false;
+    }
+
+    auto& data_node = node.as<data>();
+    auto& ci = data_node.get_primitive()->cache_info;
+    if (!ci) {
+        std::cout << "Node " << node.id() << " has no cache_info\n";
+        return false;
+    }
+    // 打印 weightless 状态
+    bool is_weightless = ci->is_weightless();
+    std::cout << "Node " << node.id() 
+              << " weightless: " << (is_weightless ? "true" : "false") << "\n";
+
+    return ci && ci->is_weightless();
+}
+
 std::vector<memory::ptr> primitive_inst::allocate_outputs(kernel_impl_params* updated_params, bool reset_mem, bool runtime_alloc) {
     std::vector<memory::ptr> outputs;
     outputs.reserve(get_node().get_outputs_count());
