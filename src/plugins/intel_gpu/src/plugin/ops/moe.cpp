@@ -68,7 +68,7 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
     validate_inputs_count(op, {11});
 
     const std::string layerName = layer_type_name_ID(op);
-    const cldnn::moe_3gemm_fused_compressed moe(layerName, inputs, config);
+    const cldnn::moe_3gemm_fused_compressed moe(layerName, inputs, config, op);
 
     p.add_primitive(*op, moe);
 }

@@ -2659,9 +2659,11 @@ memory::ptr primitive_inst::allocate_output(engine& _engine,
 bool primitive_inst::is_weightless_output(size_t i) const {
     auto& node = get_node();
     if (!node.is_type<data>()) {
-        std::cout << "wzx debug not hit" << std::endl;
+        std::cout << "Node " << node.id()  << " type: " << node.get_primitive()->type_string() << "\n";
+        std::cout << "Node " << node.id() << " is not a data primitive\n";
         return false;
     }
+
     auto& data_node = node.as<data>();
     auto& ci = data_node.get_primitive()->cache_info;
     if (!ci) {
@@ -2683,11 +2685,6 @@ std::vector<memory::ptr> primitive_inst::allocate_outputs(kernel_impl_params* up
     const auto& out_layouts = impl_params.output_layouts;
     set_flag(ExecutionFlags::MEMORY_CHANGED);
     for (size_t i = 0; i < get_node().get_outputs_count(); ++i) {
-        std::cout << "wzx debug hit primitive_inst::allocate_outputs:" << i << std::endl;
-        if (is_weightless_output(i) && !runtime_alloc) {
-            outputs.push_back(memory::ptr());
-            continue;
-        }
         if (out_layouts[i].is_dynamic() && !out_layouts[i].has_upper_bound()) {
             outputs.push_back(memory::ptr());
         } else {
