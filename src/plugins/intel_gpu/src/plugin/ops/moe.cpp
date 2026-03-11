@@ -3,6 +3,7 @@
 //
 #include "openvino/op/constant.hpp"
 #include "openvino/op/moe.hpp"
+#include "transformations/rt_info/fused_names_attribute.hpp"
 #include "intel_gpu/op/moe_compressed.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "intel_gpu/op/moe_3gemm_fused_compressed.hpp"
@@ -19,7 +20,15 @@
 #include "openvino/core/model.hpp"
 #include "openvino/util/env_util.hpp"
 #include <array>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
 #include <limits>
+#include <set>
+#include <sstream>
+#include <unordered_map>
+
+#include <pugixml.hpp>
 
 namespace cldnn {
     size_t lru_expert_num;
@@ -44,9 +53,64 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
     const auto& model = p.get_model();
     std::string weights_path;
     cldnn::lru_expert_num = ov::util::getenv_int("OTD", 0);
-    if (cldnn::lru_expert_num) {
+    const bool otd_enabled = cldnn::lru_expert_num > 0;
+    if (otd_enabled) {
         weights_path = model->get_rt_info()["__weights_path"].as<std::string>();
     }
+    const bool offset_log_enabled = std::getenv("MOE_OTD_OFFSET_LOG") != nullptr;
+
+    struct XmlConstEntry {
+        size_t offset = 0;
+        size_t size = 0;
+        bool used = false;
+    };
+
+    std::unordered_map<std::string, std::vector<XmlConstEntry>> xml_const_entries_by_name;
+    bool xml_offsets_ready = false;
+
+    auto load_const_offsets_from_xml = [&]() {
+        if (xml_offsets_ready || weights_path.empty()) {
+            return;
+        }
+
+        std::filesystem::path xml_path(weights_path);
+        xml_path.replace_extension(".xml");
+        OPENVINO_ASSERT(std::filesystem::exists(xml_path), "IR xml file is not found: ", xml_path.string());
+
+        pugi::xml_document doc;
+        OPENVINO_ASSERT(doc.load_file(xml_path.string().c_str()), "Failed to parse IR xml file: ", xml_path.string());
+
+        if (offset_log_enabled) {
+            std::cout << "[MOE_OTD_OFFSET] load_xml_offsets"
+                      << ", xml_path=" << xml_path.string()
+                      << ", bin_path=" << weights_path
+                      << std::endl;
+        }
+
+        auto net = doc.child("net");
+        auto layers = net.child("layers");
+        for (auto layer = layers.child("layer"); layer; layer = layer.next_sibling("layer")) {
+            const auto type_attr = layer.attribute("type");
+            if (!type_attr || std::string(type_attr.value()) != "Const") {
+                continue;
+            }
+
+            const auto data = layer.child("data");
+            const auto name_attr = layer.attribute("name");
+            const auto offset_attr = data.attribute("offset");
+            const auto size_attr = data.attribute("size");
+            if (!data || !name_attr || !offset_attr || !size_attr) {
+                continue;
+            }
+
+            XmlConstEntry entry;
+            entry.offset = static_cast<size_t>(std::stoull(offset_attr.value()));
+            entry.size = static_cast<size_t>(std::stoull(size_attr.value()));
+            xml_const_entries_by_name[name_attr.value()].push_back(entry);
+        }
+
+        xml_offsets_ready = true;
+    };
 
     auto get_const_offset = [&](size_t index) -> size_t {
         auto node = op->input_value(index).get_node_shared_ptr();
@@ -54,8 +118,147 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
         OPENVINO_ASSERT(const_op != nullptr, "Expected constant input for MOE3GemmFusedCompressed");
         const auto& rt_info = const_op->get_rt_info();
         auto attr_it = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-        OPENVINO_ASSERT(attr_it != rt_info.end(), "Missing WeightlessCacheAttribute for MOE3GemmFusedCompressed constant input");
-        return attr_it->second.as<ov::WeightlessCacheAttribute>().bin_offset;
+
+        if (attr_it != rt_info.end()) {
+            const auto offset = attr_it->second.as<ov::WeightlessCacheAttribute>().bin_offset;
+            if (offset_log_enabled) {
+                std::cout << "[MOE_OTD_OFFSET] resolve"
+                          << ", source=rt_info"
+                          << ", input_idx=" << index
+                          << ", const_name=" << const_op->get_friendly_name()
+                          << ", const_bytes=" << const_op->get_byte_size()
+                          << ", offset=" << offset
+                          << std::endl;
+            }
+            return offset;
+        }
+
+        load_const_offsets_from_xml();
+        OPENVINO_ASSERT(xml_offsets_ready,
+                        "Missing WeightlessCacheAttribute and failed to initialize xml-based offset lookup for "
+                        "MOE3GemmFusedCompressed constant input");
+
+        auto resolve_from_name = [&](const std::string& lookup_name,
+                                     const std::string& source,
+                                     const std::string& const_name,
+                                     size_t expected_size,
+                                     size_t& resolved_offset) -> bool {
+            auto by_name_it = xml_const_entries_by_name.find(lookup_name);
+            if (by_name_it == xml_const_entries_by_name.end()) {
+                return false;
+            }
+
+            size_t match_count = 0;
+            XmlConstEntry* matched_entry = nullptr;
+            for (auto& entry : by_name_it->second) {
+                if (!entry.used && entry.size == expected_size) {
+                    match_count++;
+                    if (matched_entry == nullptr) {
+                        matched_entry = &entry;
+                    }
+                }
+            }
+
+            if (match_count == 1 && matched_entry != nullptr) {
+                matched_entry->used = true;
+                resolved_offset = matched_entry->offset;
+                if (offset_log_enabled) {
+                    std::cout << "[MOE_OTD_OFFSET] resolve"
+                              << ", source=" << source
+                              << ", input_idx=" << index
+                              << ", const_name=" << const_name
+                              << ", lookup_name=" << lookup_name
+                              << ", const_bytes=" << expected_size
+                              << ", offset=" << resolved_offset
+                              << std::endl;
+                }
+                return true;
+            }
+
+            if (match_count > 1) {
+                OPENVINO_THROW("Ambiguous xml offset resolution for MOE3GemmFusedCompressed constant input: ",
+                               const_name,
+                               ", lookup_name=", lookup_name,
+                               ", byte_size=", expected_size,
+                               ", candidates=", match_count);
+            }
+
+            return false;
+        };
+
+        const auto& name = const_op->get_friendly_name();
+        const size_t expected_size = const_op->get_byte_size();
+        size_t resolved_offset = 0;
+        if (resolve_from_name(name, "xml_by_name", name, expected_size, resolved_offset)) {
+            return resolved_offset;
+        }
+
+        // Try original/fused names before using any size-based fallback.
+        std::set<std::string> fused_names_unique;
+        for (const auto& fused_name : ov::getFusedNamesVector(const_op)) {
+            if (!fused_name.empty() && fused_name != name) {
+                fused_names_unique.insert(fused_name);
+            }
+        }
+        for (const auto& fused_name : fused_names_unique) {
+            if (resolve_from_name(fused_name, "xml_by_fused_name", name, expected_size, resolved_offset)) {
+                return resolved_offset;
+            }
+        }
+
+        // Fallback: allow by-size only when there is exactly one unused candidate.
+        struct SizeCandidate {
+            std::string name;
+            XmlConstEntry* entry = nullptr;
+        };
+        std::vector<SizeCandidate> size_candidates;
+        for (auto& kv : xml_const_entries_by_name) {
+            for (auto& entry : kv.second) {
+                if (!entry.used && entry.size == expected_size) {
+                    size_candidates.push_back(SizeCandidate{kv.first, &entry});
+                }
+            }
+        }
+
+        if (size_candidates.size() == 1 && size_candidates[0].entry != nullptr) {
+            size_candidates[0].entry->used = true;
+            const auto offset = size_candidates[0].entry->offset;
+            if (offset_log_enabled) {
+                std::cout << "[MOE_OTD_OFFSET] resolve"
+                          << ", source=xml_by_size_unique_fallback"
+                          << ", input_idx=" << index
+                          << ", const_name=" << name
+                          << ", fallback_name=" << size_candidates[0].name
+                          << ", const_bytes=" << expected_size
+                          << ", offset=" << offset
+                          << std::endl;
+            }
+            return offset;
+        }
+
+        if (size_candidates.size() > 1) {
+            std::ostringstream oss;
+            const size_t max_candidates_to_log = 8;
+            for (size_t i = 0; i < std::min(max_candidates_to_log, size_candidates.size()); i++) {
+                const auto* candidate_entry = size_candidates[i].entry;
+                if (candidate_entry == nullptr) {
+                    continue;
+                }
+                if (i > 0) {
+                    oss << ';';
+                }
+                oss << size_candidates[i].name << '@' << candidate_entry->offset;
+            }
+
+            OPENVINO_THROW("Ambiguous xml offset resolution for MOE3GemmFusedCompressed constant input: ",
+                           name,
+                           ", byte_size=", expected_size,
+                           ", size_candidates=", size_candidates.size(),
+                           ", sample_candidates=", oss.str());
+        }
+
+        OPENVINO_THROW("Unable to resolve xml offset for MOE3GemmFusedCompressed constant input: ", name,
+                       ", byte_size=", expected_size);
     };
 
     const std::array<size_t, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> const_input_idx_by_offset = {
@@ -71,8 +274,27 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
     };
 
     std::vector<size_t> weight_bin_offsets(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count, 0);
-    for (size_t i = 0; i < const_input_idx_by_offset.size(); i++) {
-        weight_bin_offsets[i] = get_const_offset(const_input_idx_by_offset[i]);
+    // Serialized offsets are only needed for OTD path (weight-on-demand loading).
+    if (otd_enabled) {
+        for (size_t i = 0; i < const_input_idx_by_offset.size(); i++) {
+            weight_bin_offsets[i] = get_const_offset(const_input_idx_by_offset[i]);
+        }
+
+        if (offset_log_enabled) {
+            static const std::array<const char*, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> kOffsetNames = {{
+                "gate_w", "up_w", "down_w", "gate_s", "up_s", "down_s", "gate_z", "up_z", "down_z"
+            }};
+            std::cout << "[MOE_OTD_OFFSET] final_weight_bin_offsets"
+                      << ", otd=" << cldnn::lru_expert_num
+                      << ", primitive_id=" << layer_type_name_ID(op)
+                      << std::endl;
+            for (size_t i = 0; i < weight_bin_offsets.size(); i++) {
+                std::cout << "[MOE_OTD_OFFSET] final"
+                          << ", tensor=" << kOffsetNames[i]
+                          << ", offset=" << weight_bin_offsets[i]
+                          << std::endl;
+            }
+        }
     }
     ///   0: hidden_states - input tensor with hidden representations
     ///   1: routing_weights - [num_seq, num_experts] routing weights for all experts

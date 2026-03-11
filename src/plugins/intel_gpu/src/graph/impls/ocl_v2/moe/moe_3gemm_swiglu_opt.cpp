@@ -14,6 +14,7 @@
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
 #    include <initializer_list>
+#    include <cstdlib>
 #    include <cstdint>
 #    include <fstream>
 #    include <limits>
@@ -879,6 +880,13 @@ public:
             use_micro_gemm_prefill = false;
         }
 
+        // OTD relies on runtime weight streaming in oneDNN path.
+        if (cldnn::lru_expert_num > 0 && use_micro_gemm_prefill) {
+            use_micro_gemm_prefill = false;
+            GPU_DEBUG_TRACE_DETAIL << "[DEBUG] moe_3gemm_swiglu_opt_impl(): force disable micro_gemm prefill in OTD mode, lru_expert_num="
+                                   << cldnn::lru_expert_num << std::endl;
+        }
+
         // Don't change the order of stages
         add_stage(softmax_topk, params);
         add_stage(gather, params);
@@ -1236,7 +1244,7 @@ public:
         return mapped_memory;
     }
 
-    static void fill_weights_memory(cldnn::engine& engine,
+    static void fill_weights_memory(cldnn::stream& exec_stream,
         const cldnn::moe_3gemm_fused_compressed& desc,
         cldnn::moe_weights& wei_mem, const std::vector<uint32_t>& experts_list, const std::vector<uint32_t>& lru_experts) {
         const auto num_expert = static_cast<size_t>(desc._config.num_expert);
@@ -1246,6 +1254,16 @@ public:
         OPENVINO_ASSERT(!weights_path.empty(), "weights path is empty for OTD weight loading");
         OPENVINO_ASSERT(weight_bin_offsets.size() == cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count,
                 "Unexpected number of MOE weight offsets");
+
+        static std::once_flag file_size_flag;
+        static size_t weight_file_size = 0;
+        std::call_once(file_size_flag, [&] {
+            std::ifstream size_file(weights_path.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
+            OPENVINO_ASSERT(size_file.is_open(), "Failed to open weight file to query size: ", weights_path);
+            auto end_pos = size_file.tellg();
+            OPENVINO_ASSERT(end_pos >= 0, "Failed to query weight file size: ", weights_path);
+            weight_file_size = static_cast<size_t>(end_pos);
+        });
 
         const char* io_mode_env = std::getenv("OTD_WEIGHT_IO_MODE");
         const bool use_mmap = io_mode_env != nullptr && std::string(io_mode_env) == "mmap";
@@ -1267,10 +1285,126 @@ public:
 
         std::vector<uint8_t> bounce;
 
+        static const std::array<const char*, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> tensor_names = {{
+            "gate_w", "up_w", "down_w", "gate_s", "up_s", "down_s", "gate_z", "up_z", "down_z"
+        }};
+
+        const bool transpose_scale_zp = std::getenv("MOE_OTD_DISABLE_SCALE_ZP_TRANSPOSE") == nullptr;
+        auto maybe_transpose_scale_zp = [&](const char* tensor_name,
+                                            const cldnn::layout& layout,
+                                            std::vector<uint8_t>& payload,
+                                            size_t per_expert_size) {
+            if (!transpose_scale_zp || tensor_name == nullptr) {
+                return;
+            }
+
+            const std::string_view name(tensor_name);
+            const bool is_scale = name.find("_s") != std::string_view::npos;
+            const bool is_zp = name.find("_z") != std::string_view::npos;
+            if (!is_scale && !is_zp) {
+                return;
+            }
+
+            size_t oc = 0;
+            size_t ic = 0;
+            if (name.rfind("down_", 0) == 0) {
+                oc = static_cast<size_t>(desc._config.hidden_size);
+                ic = static_cast<size_t>(desc._config.inter_size);
+            } else {
+                oc = static_cast<size_t>(desc._config.inter_size);
+                ic = static_cast<size_t>(desc._config.hidden_size);
+            }
+
+            const size_t group_size = static_cast<size_t>(desc._config.group_size);
+            size_t group_count = 1;
+            if (group_size != 0 && group_size != std::numeric_limits<size_t>::max()) {
+                OPENVINO_ASSERT(ic % group_size == 0,
+                                "Invalid group_size for OTD transpose: tensor=",
+                                tensor_name,
+                                ", ic=",
+                                ic,
+                                ", group_size=",
+                                group_size);
+                group_count = ic / group_size;
+            }
+
+            OPENVINO_ASSERT(oc > 0 && group_count > 0,
+                            "Invalid dims for OTD transpose: tensor=",
+                            tensor_name,
+                            ", oc=",
+                            oc,
+                            ", group_count=",
+                            group_count);
+
+            const size_t elem_count = oc * group_count;
+            if (is_scale) {
+                const size_t elem_size = static_cast<size_t>(data_type_traits::size_of(layout.data_type));
+                OPENVINO_ASSERT(elem_size > 0, "Invalid scale element size for tensor=", tensor_name);
+                OPENVINO_ASSERT(elem_count * elem_size == per_expert_size,
+                                "Unexpected scale payload size for tensor=",
+                                tensor_name,
+                                ", expected=",
+                                elem_count * elem_size,
+                                ", got=",
+                                per_expert_size);
+
+                std::vector<uint8_t> transposed(per_expert_size, 0);
+                for (size_t o = 0; o < oc; o++) {
+                    for (size_t g = 0; g < group_count; g++) {
+                        const size_t src_elem_idx = o * group_count + g;
+                        const size_t dst_elem_idx = g * oc + o;
+                        std::memcpy(transposed.data() + dst_elem_idx * elem_size,
+                                    payload.data() + src_elem_idx * elem_size,
+                                    elem_size);
+                    }
+                }
+                payload.swap(transposed);
+                return;
+            }
+
+            // ZP is packed as 4-bit values (low nibble first). Unpack -> transpose -> repack.
+            OPENVINO_ASSERT(elem_count % 2 == 0,
+                            "Unexpected odd element count for packed zp tensor=",
+                            tensor_name,
+                            ", elem_count=",
+                            elem_count);
+            OPENVINO_ASSERT(elem_count / 2 == per_expert_size,
+                            "Unexpected zp payload size for tensor=",
+                            tensor_name,
+                            ", expected=",
+                            elem_count / 2,
+                            ", got=",
+                            per_expert_size);
+
+            std::vector<uint8_t> unpacked(elem_count, 0);
+            for (size_t i = 0; i < per_expert_size; i++) {
+                const uint8_t byte = payload[i];
+                unpacked[2 * i] = static_cast<uint8_t>(byte & 0x0F);
+                unpacked[2 * i + 1] = static_cast<uint8_t>((byte >> 4) & 0x0F);
+            }
+
+            std::vector<uint8_t> transposed_unpacked(elem_count, 0);
+            for (size_t o = 0; o < oc; o++) {
+                for (size_t g = 0; g < group_count; g++) {
+                    const size_t src_idx = o * group_count + g;
+                    const size_t dst_idx = g * oc + o;
+                    transposed_unpacked[dst_idx] = unpacked[src_idx];
+                }
+            }
+
+            std::vector<uint8_t> repacked(per_expert_size, 0);
+            for (size_t i = 0; i < per_expert_size; i++) {
+                repacked[i] = static_cast<uint8_t>((transposed_unpacked[2 * i] & 0x0F) |
+                                                   ((transposed_unpacked[2 * i + 1] & 0x0F) << 4));
+            }
+            payload.swap(repacked);
+        };
+
         auto fill_from_disk = [&] (size_t base_offset,
                                cldnn::memory_ptr mem,
                                size_t expert_no,
-                               size_t lru_expert_no) {
+                               size_t lru_expert_no,
+                               const char* tensor_name) {
             if (!mem)
                 return;
 
@@ -1280,6 +1414,22 @@ public:
             size_t per_expert_size = 0;
             per_expert_size = total_bytes / num_expert;
             size_t src_offset = base_offset + expert_no * per_expert_size;
+            size_t dst_offset = lru_expert_no * per_expert_size;
+
+            OPENVINO_ASSERT(src_offset <= weight_file_size, "Invalid src_offset out of file: ", src_offset, ", file_size=", weight_file_size);
+            OPENVINO_ASSERT(per_expert_size <= weight_file_size - src_offset,
+                            "Read range out of file for tensor ",
+                            tensor_name,
+                            ": src_offset=",
+                            src_offset,
+                            ", per_expert_size=",
+                            per_expert_size,
+                            ", file_size=",
+                            weight_file_size,
+                            ", base_offset=",
+                            base_offset,
+                            ", expert=",
+                            expert_no);
 
             // ---- 1. bounce buffer (GPU-safe host memory) ----
             if (bounce.size() < per_expert_size) {
@@ -1306,11 +1456,13 @@ public:
                 }
             }
 
+            maybe_transpose_scale_zp(tensor_name, mem->get_layout(), bounce, per_expert_size);
+
             // ---- 3. GPU copy (safe) ----
-            mem->copy_from(engine.get_service_stream(),
+            mem->copy_from(exec_stream,
                            bounce.data(),
                            0,  // src offset
-                           lru_expert_no * per_expert_size,
+                           dst_offset,
                            per_expert_size,
                            true);
         };
@@ -1329,8 +1481,8 @@ public:
 
         size_t i = 0;
         for (uint32_t expert: experts_list) {
-            for (size_t offset_pos = 0; offset_pos < tensors_by_offset.size(); offset_pos++) {
-                fill_from_disk(weight_bin_offsets[offset_pos], tensors_by_offset[offset_pos], expert, lru_experts[i]);
+            for (size_t offset_pos = 0; offset_pos < static_cast<size_t>(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count); offset_pos++) {
+                fill_from_disk(weight_bin_offsets[offset_pos], tensors_by_offset[offset_pos], expert, lru_experts[i], tensor_names[offset_pos]);
             }
             i++;
         }
@@ -1339,19 +1491,22 @@ public:
 
     static uint32_t get_lru_expert_no(typed_primitive_inst<moe_3gemm_fused_compressed>& instance, uint32_t expert, LRUCache& cache) {
         auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
-        auto& engine = instance.get_network().get_engine();
+        auto& stream = instance.get_network().get_stream();
         size_t layer = get_layer(instance);
-        cldnn::moe_weights params;
         auto item = cache.get_lru_item(layer, expert);
+        OPENVINO_ASSERT(item.first <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
+                        "LRU slot index overflow: ",
+                        item.first);
+        const auto lru_slot = static_cast<uint32_t>(item.first);
         if(!item.second) {
             std::vector<uint32_t> experts_list_single;
             experts_list_single.push_back(expert);
             std::vector<uint32_t> lru_experts_list_single;
-            lru_experts_list_single.push_back(item.first);
-            fill_weights_memory(engine, *cur_moe, instance._weights, experts_list_single, lru_experts_list_single);
-            cache.set_filled(item.first);
+            lru_experts_list_single.push_back(lru_slot);
+            fill_weights_memory(stream, *cur_moe, instance._weights, experts_list_single, lru_experts_list_single);
+            cache.set_filled(lru_slot);
         }
-        return item.first;
+        return lru_slot;
     }
 
     cldnn::event::ptr exec_single_token(const std::vector<cldnn::event::ptr>& events,
@@ -1788,6 +1943,7 @@ public:
 
     using lru_cache_hash = LruCache<std::pair<int, int>, std::shared_ptr<onednn_kernel>, PairHash>;
     lru_cache_hash _kernels = lru_cache_hash(1024);
+    std::shared_ptr<onednn_kernel> _otd_kernel_holder;
     onednn_kernel& get_kernel(int n_token, int expert_no, typed_primitive_inst<moe_3gemm_fused_compressed>& instance) {
         auto key = std::make_pair(n_token, expert_no);
         if (_kernels.has(key)) {
@@ -1847,9 +2003,8 @@ public:
         // each time dnnl_weights updated need refresh kernel cache in OTD mode, if not, the stream engine context and memory storage engine context will mismatch,
         // dnnl kernel will report invalid_arguments and fail or compute wrong and output wrong tokens. if any perf concerns, need deep dive here.
         if (cldnn::lru_expert_num) {
-            static auto otd_kernel = std::make_shared<onednn_kernel>();
-            otd_kernel = kernel;
-            return *otd_kernel;
+            _otd_kernel_holder = kernel;
+            return *_otd_kernel_holder;
         }
         _kernels.add(key, kernel);
         return *_kernels.get(key);
@@ -1912,6 +2067,10 @@ public:
             }
 
             if (cldnn::lru_expert_num) {
+                // Ensure previous oneDNN work is completed before any potential
+                // LRU slot overwrite in get_lru_expert_no/fill_weights_memory.
+                dnn_stream.wait();
+
                 auto& dnnl_weights = _dnnl_weights[expert_no];
                 auto lru_expert_no = get_lru_expert_no(instance, static_cast<uint32_t>(expert_no), cache);
                 auto& params = instance._weights;
