@@ -35,9 +35,12 @@
 #include "intel_gpu/runtime/debug_configuration.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 
 namespace ov::intel_gpu {
@@ -111,6 +114,51 @@ static bool is_moe_related_constant(const std::shared_ptr<ov::op::v0::Constant>&
     return false;
 }
 
+struct PartialMoeConstUploadLogState {
+    static constexpr size_t max_detailed_logs = 3;
+
+    void log(const std::string& node_name,
+             size_t uploaded_experts,
+             size_t total_experts,
+             size_t upload_bytes,
+             size_t target_bytes) {
+        total_upload_bytes.fetch_add(static_cast<uint64_t>(upload_bytes), std::memory_order_relaxed);
+        total_target_bytes.fetch_add(static_cast<uint64_t>(target_bytes), std::memory_order_relaxed);
+
+        const size_t total = total_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (total <= max_detailed_logs) {
+            std::cout << "[EXPERIMENTAL] OTD partial constant allocation at compile stage: "
+                      << node_name << ", experts=" << uploaded_experts
+                      << "/" << total_experts << ", upload_bytes=" << upload_bytes
+                      << ", target_bytes=" << target_bytes << std::endl;
+        } else if (total == max_detailed_logs + 1) {
+            std::cout << "[EXPERIMENTAL] OTD partial constant allocation: suppressing further per-constant logs, "
+                      << "final summary will be printed at process exit" << std::endl;
+        }
+    }
+
+    ~PartialMoeConstUploadLogState() {
+        const size_t total = total_count.load(std::memory_order_relaxed);
+        if (total > max_detailed_logs) {
+            const size_t shown = max_detailed_logs;
+            std::cout << "[EXPERIMENTAL] OTD partial constant allocation summary: total=" << total
+                      << ", shown=" << shown << ", suppressed=" << (total - shown)
+                      << ", total_upload_bytes=" << total_upload_bytes.load(std::memory_order_relaxed)
+                      << ", total_target_bytes=" << total_target_bytes.load(std::memory_order_relaxed)
+                      << std::endl;
+        }
+    }
+
+    std::atomic<size_t> total_count{0};
+    std::atomic<uint64_t> total_upload_bytes{0};
+    std::atomic<uint64_t> total_target_bytes{0};
+};
+
+static PartialMoeConstUploadLogState& get_partial_moe_const_upload_log_state() {
+    static PartialMoeConstUploadLogState state;
+    return state;
+}
+
 static void create_data(ProgramBuilder& p, const ov::Shape& const_shape, const std::shared_ptr<ov::op::v0::Constant>& op, const ConstProperties& props) {
     cldnn::tensor constTensor = getConstTensor(const_shape);
     auto constFormat = cldnn::format::get_default_format(const_shape.size());
@@ -150,10 +198,11 @@ static void create_data(ProgramBuilder& p, const ov::Shape& const_shape, const s
             auto upload_mem = p.get_engine().allocate_memory(upload_layout, false);
             mem = p.get_engine().reinterpret_buffer(*upload_mem, constLayout);
             upload_bytes = upload_layout.bytes_count();
-            std::cout << "[EXPERIMENTAL] OTD partial constant allocation at compile stage: "
-                      << op->get_friendly_name() << ", experts=" << upload_shape[0]
-                      << "/" << const_shape[0] << ", upload_bytes=" << upload_bytes
-                      << ", target_bytes=" << constLayout.bytes_count() << std::endl;
+            get_partial_moe_const_upload_log_state().log(op->get_friendly_name(),
+                                                         upload_shape[0],
+                                                         const_shape[0],
+                                                         upload_bytes,
+                                                         constLayout.bytes_count());
         } else if (constLayout.bytes_count() > 0) {
             mem = p.get_engine().allocate_memory(constLayout, false);
         } else { 

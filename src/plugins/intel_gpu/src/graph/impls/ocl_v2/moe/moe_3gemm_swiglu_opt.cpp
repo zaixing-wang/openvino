@@ -6,25 +6,47 @@
 #include "moe_3gemm_gen_micro.hpp"
 #include "moe_3gemm_swiglu_opt.hpp"
 #include "openvino/runtime/shared_buffer.hpp"
-#include "openvino/util/mmap_object.hpp"
 #include "LRUCache.hpp"
 // clang-format on
 
 #define DEBUG_MOE_LOG 0
 
 #ifdef ENABLE_ONEDNN_FOR_GPU
+#    include <chrono>
 #    include <initializer_list>
 #    include <cstdlib>
 #    include <cstdint>
 #    include <fstream>
+#    include <iostream>
 #    include <limits>
 #    include <mutex>
 #    include <oneapi/dnnl/dnnl.hpp>
 #    include <oneapi/dnnl/dnnl_ocl.hpp>
 #    include <sstream>
 #    include <string_view>
+#    include <thread>
 #    include <tuple>
 #    include <utility>
+
+#    ifdef _WIN32
+#        ifndef NOMINMAX
+#            define NOMINMAX
+#        endif
+#        ifndef WIN32_LEAN_AND_MEAN
+#            define WIN32_LEAN_AND_MEAN
+#        endif
+#        include <windows.h>
+#        ifdef min
+#            undef min
+#        endif
+#        ifdef max
+#            undef max
+#        endif
+#    else
+#        include <fcntl.h>
+#        include <sys/stat.h>
+#        include <unistd.h>
+#    endif
 
 #    include "../primitive_ocl_base.hpp"
 #    include "../utils/kernel_generator.hpp"
@@ -46,6 +68,298 @@ namespace ov::intel_gpu::ocl {
 namespace {
 
 using namespace ov::intel_gpu::ocl;
+
+struct lru_exec_stats {
+    uint64_t lookups = 0;
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t miss_load_us = 0;
+};
+
+struct decode_exec_stats {
+    uint64_t topk_us = 0;
+    uint64_t lru_lookup_us = 0;
+    uint64_t lru_fill_us = 0;
+    uint64_t lru_io_us = 0;
+    uint64_t lru_transpose_us = 0;
+    uint64_t lru_gpu_copy_us = 0;
+    uint64_t remap_us = 0;
+    uint64_t gate_up_us = 0;
+    uint64_t down_us = 0;
+    uint64_t reduce_us = 0;
+    uint64_t total_us = 0;
+    uint64_t lru_lookups = 0;
+    uint64_t lru_hits = 0;
+    uint64_t lru_misses = 0;
+};
+
+struct decode_layer_stats {
+    uint64_t execute_count = 0;
+    uint64_t topk_us = 0;
+    uint64_t lru_lookup_us = 0;
+    uint64_t lru_fill_us = 0;
+    uint64_t lru_io_us = 0;
+    uint64_t lru_transpose_us = 0;
+    uint64_t lru_gpu_copy_us = 0;
+    uint64_t remap_us = 0;
+    uint64_t gate_up_us = 0;
+    uint64_t down_us = 0;
+    uint64_t reduce_us = 0;
+    uint64_t total_us = 0;
+    uint64_t lru_lookups = 0;
+    uint64_t lru_hits = 0;
+    uint64_t lru_misses = 0;
+};
+
+struct lru_layer_stats {
+    uint64_t execute_count = 0;
+    uint64_t lookups = 0;
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t miss_load_us = 0;
+    uint64_t hit_only_execute_count = 0;
+    uint64_t hit_only_execute_us = 0;
+    uint64_t miss_execute_count = 0;
+    uint64_t miss_execute_us = 0;
+};
+
+static bool lru_stats_enabled() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("MOE_OTD_LRU_STATS");
+        return env != nullptr && std::string(env) != "0";
+    }();
+    return enabled;
+}
+
+static bool decode_profile_enabled() {
+    static const bool enabled = []() {
+        const char* env = std::getenv("MOE_OTD_DECODE_PROFILE");
+        return env != nullptr && std::string(env) != "0";
+    }();
+    return enabled;
+}
+
+static bool otd_parallel_read_enabled() {
+    static const bool enabled = []() {
+        const char* enable_env = std::getenv("OTD_WEIGHT_ENABLE_PARALLEL_READ");
+        if (enable_env != nullptr && std::string(enable_env) == "1") {
+            return true;
+        }
+
+        const char* disable_env = std::getenv("OTD_WEIGHT_DISABLE_PARALLEL_READ");
+        if (disable_env != nullptr && std::string(disable_env) == "1") {
+            return false;
+        }
+
+        return false;
+    }();
+    return enabled;
+}
+
+static bool otd_use_legacy_stream_read() {
+    static const bool use_legacy = []() {
+        const char* env = std::getenv("OTD_WEIGHT_USE_LEGACY_STREAM_READ");
+        return env != nullptr && std::string(env) == "1";
+    }();
+    return use_legacy;
+}
+
+static void log_otd_weight_read_mode_once(const std::string& weights_path) {
+    static std::once_flag log_once;
+    std::call_once(log_once, [&] {
+        const bool use_legacy = otd_use_legacy_stream_read();
+        const bool use_parallel = otd_parallel_read_enabled();
+        const char* resolved_mode = use_legacy ? "legacy_stream_read" : (use_parallel ? "latest_parallel_read" : "latest_thread_local_read");
+        const char* legacy_env = std::getenv("OTD_WEIGHT_USE_LEGACY_STREAM_READ");
+        const char* enable_parallel_env = std::getenv("OTD_WEIGHT_ENABLE_PARALLEL_READ");
+        const char* disable_parallel_env = std::getenv("OTD_WEIGHT_DISABLE_PARALLEL_READ");
+
+        std::cout << "[MOE_OTD_IO] weight_read_mode=" << resolved_mode
+                  << ", weights_path=" << weights_path
+                  << ", env{OTD_WEIGHT_USE_LEGACY_STREAM_READ=" << (legacy_env ? legacy_env : "<unset>")
+                  << ", OTD_WEIGHT_ENABLE_PARALLEL_READ=" << (enable_parallel_env ? enable_parallel_env : "<unset>")
+                  << ", OTD_WEIGHT_DISABLE_PARALLEL_READ=" << (disable_parallel_env ? disable_parallel_env : "<unset>")
+                  << "}";
+
+        if (use_legacy) {
+            std::cout << " (legacy shared ifstream path)";
+        } else if (use_parallel) {
+            std::cout << " (latest native-handle reader with parallel chunk reads)";
+        } else {
+            std::cout << " (latest native-handle reader with single-thread reads)";
+        }
+
+        std::cout << std::endl;
+    });
+}
+
+static uint64_t steady_clock_us() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static thread_local lru_exec_stats* tls_lru_exec_stats = nullptr;
+static thread_local decode_exec_stats* tls_decode_exec_stats = nullptr;
+
+class scoped_lru_exec_stats {
+public:
+    explicit scoped_lru_exec_stats(lru_exec_stats* stats) : _prev(tls_lru_exec_stats) {
+        tls_lru_exec_stats = stats;
+    }
+
+    ~scoped_lru_exec_stats() {
+        tls_lru_exec_stats = _prev;
+    }
+
+private:
+    lru_exec_stats* _prev;
+};
+
+class scoped_decode_exec_stats {
+public:
+    explicit scoped_decode_exec_stats(decode_exec_stats* stats) : _prev(tls_decode_exec_stats) {
+        tls_decode_exec_stats = stats;
+    }
+
+    ~scoped_decode_exec_stats() {
+        tls_decode_exec_stats = _prev;
+    }
+
+private:
+    decode_exec_stats* _prev;
+};
+
+static void log_lru_stats_execute(const cldnn::primitive_id& primitive_id,
+                                  size_t token_num,
+                                  const lru_exec_stats& exec_stats,
+                                  uint64_t execute_us) {
+    static std::mutex stats_mutex;
+    static std::map<cldnn::primitive_id, lru_layer_stats> layer_stats;
+
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    auto& aggregate = layer_stats[primitive_id];
+    aggregate.execute_count++;
+    aggregate.lookups += exec_stats.lookups;
+    aggregate.hits += exec_stats.hits;
+    aggregate.misses += exec_stats.misses;
+    aggregate.miss_load_us += exec_stats.miss_load_us;
+    if (exec_stats.misses == 0) {
+        aggregate.hit_only_execute_count++;
+        aggregate.hit_only_execute_us += execute_us;
+    } else {
+        aggregate.miss_execute_count++;
+        aggregate.miss_execute_us += execute_us;
+    }
+
+    const double exec_hit_rate = exec_stats.lookups == 0 ? 1.0 : static_cast<double>(exec_stats.hits) / static_cast<double>(exec_stats.lookups);
+    const double agg_hit_rate = aggregate.lookups == 0 ? 1.0 : static_cast<double>(aggregate.hits) / static_cast<double>(aggregate.lookups);
+    const double avg_hit_only_us = aggregate.hit_only_execute_count == 0 ? 0.0 :
+        static_cast<double>(aggregate.hit_only_execute_us) / static_cast<double>(aggregate.hit_only_execute_count);
+    const double avg_miss_us = aggregate.miss_execute_count == 0 ? 0.0 :
+        static_cast<double>(aggregate.miss_execute_us) / static_cast<double>(aggregate.miss_execute_count);
+    const double avg_miss_load_us = aggregate.misses == 0 ? 0.0 :
+        static_cast<double>(aggregate.miss_load_us) / static_cast<double>(aggregate.misses);
+
+    std::cout << "[MOE_OTD_LRU] primitive=" << primitive_id
+              << ", token_num=" << token_num
+              << ", execute_us=" << execute_us
+              << ", lookups=" << exec_stats.lookups
+              << ", hits=" << exec_stats.hits
+              << ", misses=" << exec_stats.misses
+              << ", hit_rate=" << exec_hit_rate
+              << ", miss_load_us=" << exec_stats.miss_load_us
+              << ", exec_class=" << (exec_stats.misses == 0 ? "hit_only" : "with_miss")
+              << ", agg_executes=" << aggregate.execute_count
+              << ", agg_lookups=" << aggregate.lookups
+              << ", agg_hits=" << aggregate.hits
+              << ", agg_misses=" << aggregate.misses
+              << ", agg_hit_rate=" << agg_hit_rate
+              << ", agg_avg_hit_only_execute_us=" << avg_hit_only_us
+              << ", agg_avg_miss_execute_us=" << avg_miss_us
+              << ", agg_avg_miss_load_us_per_miss=" << avg_miss_load_us
+              << std::endl;
+}
+
+static const char* get_decode_bottleneck_name(const decode_exec_stats& stats) {
+    uint64_t max_us = stats.topk_us;
+    const char* bottleneck = "topk";
+    if (stats.remap_us > max_us) {
+        max_us = stats.remap_us;
+        bottleneck = "lru_remap";
+    }
+    if (stats.gate_up_us > max_us) {
+        max_us = stats.gate_up_us;
+        bottleneck = "gate_up";
+    }
+    if (stats.down_us > max_us) {
+        max_us = stats.down_us;
+        bottleneck = "down";
+    }
+    if (stats.reduce_us > max_us) {
+        bottleneck = "reduce";
+    }
+    return bottleneck;
+}
+
+static void log_decode_profile_execute(const cldnn::primitive_id& primitive_id,
+                                       const decode_exec_stats& exec_stats) {
+    static std::mutex stats_mutex;
+    static std::map<cldnn::primitive_id, decode_layer_stats> layer_stats;
+
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    auto& aggregate = layer_stats[primitive_id];
+    aggregate.execute_count++;
+    aggregate.topk_us += exec_stats.topk_us;
+    aggregate.lru_lookup_us += exec_stats.lru_lookup_us;
+    aggregate.lru_fill_us += exec_stats.lru_fill_us;
+    aggregate.lru_io_us += exec_stats.lru_io_us;
+    aggregate.lru_transpose_us += exec_stats.lru_transpose_us;
+    aggregate.lru_gpu_copy_us += exec_stats.lru_gpu_copy_us;
+    aggregate.remap_us += exec_stats.remap_us;
+    aggregate.gate_up_us += exec_stats.gate_up_us;
+    aggregate.down_us += exec_stats.down_us;
+    aggregate.reduce_us += exec_stats.reduce_us;
+    aggregate.total_us += exec_stats.total_us;
+    aggregate.lru_lookups += exec_stats.lru_lookups;
+    aggregate.lru_hits += exec_stats.lru_hits;
+    aggregate.lru_misses += exec_stats.lru_misses;
+
+    const auto avg = [&](uint64_t value) -> double {
+        return aggregate.execute_count == 0 ? 0.0 : static_cast<double>(value) / static_cast<double>(aggregate.execute_count);
+    };
+    const double agg_hit_rate = aggregate.lru_lookups == 0 ? 1.0 :
+        static_cast<double>(aggregate.lru_hits) / static_cast<double>(aggregate.lru_lookups);
+
+    std::cout << "[MOE_OTD_DECODE] primitive=" << primitive_id
+              << ", topk_us=" << exec_stats.topk_us
+              << ", lru_lookup_us=" << exec_stats.lru_lookup_us
+              << ", lru_fill_us=" << exec_stats.lru_fill_us
+              << ", lru_io_us=" << exec_stats.lru_io_us
+              << ", lru_transpose_us=" << exec_stats.lru_transpose_us
+              << ", lru_gpu_copy_us=" << exec_stats.lru_gpu_copy_us
+              << ", remap_us=" << exec_stats.remap_us
+              << ", gate_up_us=" << exec_stats.gate_up_us
+              << ", down_us=" << exec_stats.down_us
+              << ", reduce_us=" << exec_stats.reduce_us
+              << ", total_us=" << exec_stats.total_us
+              << ", lru_lookups=" << exec_stats.lru_lookups
+              << ", lru_hits=" << exec_stats.lru_hits
+              << ", lru_misses=" << exec_stats.lru_misses
+              << ", bottleneck=" << get_decode_bottleneck_name(exec_stats)
+              << ", agg_executes=" << aggregate.execute_count
+              << ", agg_avg_topk_us=" << avg(aggregate.topk_us)
+              << ", agg_avg_lru_fill_us=" << avg(aggregate.lru_fill_us)
+              << ", agg_avg_lru_io_us=" << avg(aggregate.lru_io_us)
+              << ", agg_avg_lru_transpose_us=" << avg(aggregate.lru_transpose_us)
+              << ", agg_avg_lru_gpu_copy_us=" << avg(aggregate.lru_gpu_copy_us)
+              << ", agg_avg_remap_us=" << avg(aggregate.remap_us)
+              << ", agg_avg_gate_up_us=" << avg(aggregate.gate_up_us)
+              << ", agg_avg_down_us=" << avg(aggregate.down_us)
+              << ", agg_avg_reduce_us=" << avg(aggregate.reduce_us)
+              << ", agg_avg_total_us=" << avg(aggregate.total_us)
+              << ", agg_lru_hit_rate=" << agg_hit_rate
+              << std::endl;
+}
 
 dnnl::memory::data_type convert_data_type(cldnn::data_types dt) {
     switch (dt) {
@@ -1231,17 +1545,209 @@ public:
         return layer;
     }
 
-    static std::shared_ptr<ov::MappedMemory> get_mapped_memory(const std::string& weights_path) {
-        static std::once_flag init_flag;
-        static std::shared_ptr<ov::MappedMemory> mapped_memory;
+    class otd_parallel_weight_reader {
+    public:
+        explicit otd_parallel_weight_reader(const std::string& weights_path) : _weights_path(weights_path) {
+            open_shared_handle();
+        }
 
-        std::call_once(init_flag, [&] {
-            mapped_memory = ov::load_mmap_object(weights_path.c_str());
-            if (!mapped_memory) {
-                throw std::runtime_error("Failed to mmap object");
+        ~otd_parallel_weight_reader() {
+            close_shared_handle();
+        }
+
+        const std::string& path() const {
+            return _weights_path;
+        }
+
+        void read(char* dst, size_t size, size_t file_offset) {
+            if (parallel_read_enabled() && size >= parallel_read_threshold()) {
+                if (parallel_read(dst, size, file_offset)) {
+                    return;
+                }
             }
-        });
-        return mapped_memory;
+
+            if (!single_read(get_shared_handle(), dst, size, file_offset)) {
+                throw std::runtime_error("Failed to read enough bytes from OTD weight file");
+            }
+        }
+
+    private:
+        static bool parallel_read_enabled() {
+            return otd_parallel_read_enabled();
+        }
+
+        static size_t parallel_read_threshold() {
+            static const size_t threshold = 4UL * 1024 * 1024;
+            return threshold;
+        }
+
+        static size_t get_thread_count(size_t size) {
+            const size_t hw_threads = std::max(size_t{1}, static_cast<size_t>(std::thread::hardware_concurrency()));
+            const size_t max_by_size = std::max(size_t{1}, size / (1024 * 1024));
+            return std::max(size_t{1}, std::min(hw_threads, max_by_size));
+        }
+
+#ifdef _WIN32
+        using native_handle_t = HANDLE;
+        static constexpr native_handle_t invalid_handle() {
+            return INVALID_HANDLE_VALUE;
+        }
+
+        static native_handle_t open_native_handle(const std::string& weights_path) {
+            auto path = std::filesystem::path(weights_path);
+            auto handle = CreateFileW(path.native().c_str(),
+                                      GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr,
+                                      OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL,
+                                      nullptr);
+            if (handle == INVALID_HANDLE_VALUE) {
+                throw std::runtime_error("Failed to open weight file for OTD streaming read");
+            }
+            return handle;
+        }
+
+        static void close_native_handle(native_handle_t handle) {
+            if (handle != INVALID_HANDLE_VALUE) {
+                CloseHandle(handle);
+            }
+        }
+
+        static bool single_read(native_handle_t handle, char* dst, size_t size, size_t file_offset) {
+            char* current = dst;
+            size_t remaining = size;
+            size_t current_offset = file_offset;
+            while (remaining > 0) {
+                const DWORD to_read = static_cast<DWORD>(std::min(remaining, static_cast<size_t>(UINT_MAX - 1024u)));
+                LARGE_INTEGER li = {};
+                li.QuadPart = static_cast<LONGLONG>(current_offset);
+                if (!SetFilePointerEx(handle, li, nullptr, FILE_BEGIN)) {
+                    return false;
+                }
+                DWORD bytes_read = 0;
+                if (!ReadFile(handle, current, to_read, &bytes_read, nullptr) || bytes_read == 0) {
+                    return false;
+                }
+                current += bytes_read;
+                current_offset += bytes_read;
+                remaining -= bytes_read;
+            }
+            return true;
+        }
+#else
+        using native_handle_t = int;
+        static constexpr native_handle_t invalid_handle() {
+            return -1;
+        }
+
+        static native_handle_t open_native_handle(const std::string& weights_path) {
+            auto fd = ::open(weights_path.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd == -1) {
+                throw std::runtime_error("Failed to open weight file for OTD streaming read");
+            }
+            return fd;
+        }
+
+        static void close_native_handle(native_handle_t handle) {
+            if (handle != -1) {
+                ::close(handle);
+            }
+        }
+
+        static bool single_read(native_handle_t handle, char* dst, size_t size, size_t file_offset) {
+            char* current = dst;
+            size_t remaining = size;
+            off_t current_offset = static_cast<off_t>(file_offset);
+            while (remaining > 0) {
+                const ssize_t bytes_read = ::pread(handle, current, remaining, current_offset);
+                if (bytes_read <= 0) {
+                    return false;
+                }
+                current += bytes_read;
+                current_offset += bytes_read;
+                remaining -= static_cast<size_t>(bytes_read);
+            }
+            return true;
+        }
+#endif
+
+        void open_shared_handle() {
+            _shared_handle = open_native_handle(_weights_path);
+        }
+
+        void close_shared_handle() {
+            close_native_handle(_shared_handle);
+            _shared_handle = invalid_handle();
+        }
+
+        native_handle_t get_shared_handle() const {
+            return _shared_handle;
+        }
+
+        bool parallel_read(char* dst, size_t size, size_t file_offset) const {
+            const size_t num_threads = get_thread_count(size);
+            if (num_threads == 1) {
+                return false;
+            }
+
+            size_t chunk_size = size / num_threads;
+            chunk_size = (chunk_size + 4095u) & ~size_t{4095u};
+
+            std::atomic<bool> success{true};
+            std::vector<std::thread> workers;
+            workers.reserve(num_threads);
+            for (size_t ithr = 0; ithr < num_threads; ++ithr) {
+                try {
+                    workers.emplace_back([&, ithr]() {
+                        const size_t chunk_offset = ithr * chunk_size;
+                        if (chunk_offset >= size) {
+                            return;
+                        }
+
+                        const size_t read_size = (ithr == num_threads - 1)
+                            ? (size - chunk_offset)
+                            : std::min(chunk_size, size - chunk_offset);
+                        native_handle_t thread_handle = invalid_handle();
+                        try {
+                            thread_handle = open_native_handle(_weights_path);
+                        } catch (...) {
+                            success = false;
+                            return;
+                        }
+
+                        const bool ok = single_read(thread_handle,
+                                                    dst + chunk_offset,
+                                                    read_size,
+                                                    file_offset + chunk_offset);
+                        close_native_handle(thread_handle);
+                        if (!ok) {
+                            success = false;
+                        }
+                    });
+                } catch (...) {
+                    success = false;
+                    break;
+                }
+            }
+
+            for (auto& worker : workers) {
+                worker.join();
+            }
+
+            return success.load();
+        }
+
+        std::string _weights_path;
+        native_handle_t _shared_handle = invalid_handle();
+    };
+
+    static otd_parallel_weight_reader& get_thread_local_weight_reader(const std::string& weights_path) {
+        thread_local std::unique_ptr<otd_parallel_weight_reader> reader;
+        if (!reader || reader->path() != weights_path) {
+            reader = std::make_unique<otd_parallel_weight_reader>(weights_path);
+        }
+        return *reader;
     }
 
     static void fill_weights_memory(cldnn::stream& exec_stream,
@@ -1265,23 +1771,8 @@ public:
             weight_file_size = static_cast<size_t>(end_pos);
         });
 
-        const char* io_mode_env = std::getenv("OTD_WEIGHT_IO_MODE");
-        const bool use_mmap = io_mode_env != nullptr && std::string(io_mode_env) == "mmap";
-        std::shared_ptr<ov::MappedMemory> mapped_memory;
-        static std::once_flag file_open_flag;
-        static std::unique_ptr<std::ifstream> weight_file;
-        static std::mutex weight_file_mutex;
-        if (use_mmap) {
-            mapped_memory = get_mapped_memory(weights_path);
-        } else {
-            std::call_once(file_open_flag, [&] {
-                auto file = std::make_unique<std::ifstream>(weights_path.c_str(), std::ios::in | std::ios::binary);
-                if (!file->is_open()) {
-                    throw std::runtime_error("Failed to open weight file for OTD streaming read");
-                }
-                weight_file = std::move(file);
-            });
-        }
+        const bool use_legacy_stream_read = otd_use_legacy_stream_read();
+        log_otd_weight_read_mode_once(weights_path);
 
         std::vector<uint8_t> bounce;
 
@@ -1437,34 +1928,69 @@ public:
             }
 
             // ---- 2. host load (mmap or streaming read) ----
-            if (use_mmap) {
-                const uint8_t* mmap_src =
-                    reinterpret_cast<const uint8_t*>(mapped_memory->data()) + src_offset;
-                std::memcpy(bounce.data(), mmap_src, per_expert_size);
+            auto* decode_stats = tls_decode_exec_stats;
+            uint64_t io_begin_us = 0;
+            if (decode_stats != nullptr) {
+                io_begin_us = steady_clock_us();
+            }
+            if (use_legacy_stream_read) {
+                static std::once_flag stream_init_flag;
+                static std::ifstream weight_stream;
+                static std::mutex weight_stream_mutex;
+                std::call_once(stream_init_flag, [&] {
+                    weight_stream.open(weights_path.c_str(), std::ios::in | std::ios::binary);
+                    OPENVINO_ASSERT(weight_stream.is_open(), "Failed to open weight file for OTD legacy streaming read: ", weights_path);
+                });
+
+                std::lock_guard<std::mutex> lock(weight_stream_mutex);
+                weight_stream.clear();
+                weight_stream.seekg(static_cast<std::streamoff>(src_offset), std::ios::beg);
+                OPENVINO_ASSERT(weight_stream.good(),
+                                "Failed to seek weight file for tensor ",
+                                tensor_name,
+                                ": src_offset=",
+                                src_offset,
+                                ", path=",
+                                weights_path);
+                weight_stream.read(reinterpret_cast<char*>(bounce.data()), static_cast<std::streamsize>(per_expert_size));
+                OPENVINO_ASSERT(weight_stream.gcount() == static_cast<std::streamsize>(per_expert_size),
+                                "Failed to read enough bytes from OTD legacy stream for tensor ",
+                                tensor_name,
+                                ": expected=",
+                                per_expert_size,
+                                ", got=",
+                                weight_stream.gcount());
             } else {
-                OPENVINO_ASSERT(per_expert_size <= static_cast<size_t>(std::numeric_limits<std::streamsize>::max()),
-                                "per_expert_size is too large for stream read");
-                std::lock_guard<std::mutex> guard(weight_file_mutex);
-                weight_file->clear();
-                weight_file->seekg(static_cast<std::streamoff>(src_offset), std::ios::beg);
-                if (!weight_file->good()) {
-                    throw std::runtime_error("Failed to seek OTD weight file");
-                }
-                weight_file->read(reinterpret_cast<char*>(bounce.data()), static_cast<std::streamsize>(per_expert_size));
-                if (weight_file->gcount() != static_cast<std::streamsize>(per_expert_size)) {
-                    throw std::runtime_error("Failed to read enough bytes from OTD weight file");
-                }
+                auto& weight_reader = get_thread_local_weight_reader(weights_path);
+                weight_reader.read(reinterpret_cast<char*>(bounce.data()), per_expert_size, src_offset);
+            }
+            if (decode_stats != nullptr) {
+                decode_stats->lru_io_us += steady_clock_us() - io_begin_us;
             }
 
+            uint64_t transpose_begin_us = 0;
+            if (decode_stats != nullptr) {
+                transpose_begin_us = steady_clock_us();
+            }
             maybe_transpose_scale_zp(tensor_name, mem->get_layout(), bounce, per_expert_size);
+            if (decode_stats != nullptr) {
+                decode_stats->lru_transpose_us += steady_clock_us() - transpose_begin_us;
+            }
 
             // ---- 3. GPU copy (safe) ----
+            uint64_t gpu_copy_begin_us = 0;
+            if (decode_stats != nullptr) {
+                gpu_copy_begin_us = steady_clock_us();
+            }
             mem->copy_from(exec_stream,
                            bounce.data(),
                            0,  // src offset
                            dst_offset,
                            per_expert_size,
                            true);
+            if (decode_stats != nullptr) {
+                decode_stats->lru_gpu_copy_us += steady_clock_us() - gpu_copy_begin_us;
+            }
         };
 
         const std::array<cldnn::memory_ptr, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> tensors_by_offset = {{
@@ -1493,25 +2019,62 @@ public:
         auto cur_moe = instance.get_typed_desc<moe_3gemm_fused_compressed>();
         auto& stream = instance.get_network().get_stream();
         size_t layer = get_layer(instance);
+        auto* decode_stats = tls_decode_exec_stats;
+        uint64_t lookup_begin_us = 0;
+        if (decode_stats != nullptr) {
+            decode_stats->lru_lookups++;
+            lookup_begin_us = steady_clock_us();
+        }
         auto item = cache.get_lru_item(layer, expert);
+        if (decode_stats != nullptr) {
+            decode_stats->lru_lookup_us += steady_clock_us() - lookup_begin_us;
+        }
+        auto* exec_stats = tls_lru_exec_stats;
+        if (exec_stats != nullptr) {
+            exec_stats->lookups++;
+        }
         OPENVINO_ASSERT(item.first <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
                         "LRU slot index overflow: ",
                         item.first);
         const auto lru_slot = static_cast<uint32_t>(item.first);
         if(!item.second) {
+            uint64_t miss_begin_us = 0;
+            if (exec_stats != nullptr) {
+                exec_stats->misses++;
+                miss_begin_us = steady_clock_us();
+            }
+            if (decode_stats != nullptr) {
+                decode_stats->lru_misses++;
+                miss_begin_us = steady_clock_us();
+            }
             std::vector<uint32_t> experts_list_single;
             experts_list_single.push_back(expert);
             std::vector<uint32_t> lru_experts_list_single;
             lru_experts_list_single.push_back(lru_slot);
             fill_weights_memory(stream, *cur_moe, instance._weights, experts_list_single, lru_experts_list_single);
             cache.set_filled(lru_slot);
+            if (exec_stats != nullptr) {
+                exec_stats->miss_load_us += steady_clock_us() - miss_begin_us;
+            }
+            if (decode_stats != nullptr) {
+                decode_stats->lru_fill_us += steady_clock_us() - miss_begin_us;
+            }
+        } else {
+            if (exec_stats != nullptr) {
+                exec_stats->hits++;
+            }
+            if (decode_stats != nullptr) {
+                decode_stats->lru_hits++;
+            }
         }
         return lru_slot;
     }
 
     cldnn::event::ptr exec_single_token(const std::vector<cldnn::event::ptr>& events,
                                         typed_primitive_inst<moe_3gemm_fused_compressed>& instance,
-                                        scratch_buffers& scratch, LRUCache& cache) {
+                                        scratch_buffers& scratch,
+                                        LRUCache& cache,
+                                        decode_exec_stats* decode_stats = nullptr) {
         auto& cur_net = instance.get_network();
         auto& stream = cur_net.get_stream();
         if(cldnn::lru_expert_num) {
@@ -1532,6 +2095,10 @@ public:
         const size_t max_work_group_size = instance.get_impl_params()->get_device_info().max_work_group_size;
 
         if(cldnn::lru_expert_num) {
+            uint64_t remap_begin_us = 0;
+            if (decode_stats != nullptr) {
+                remap_begin_us = steady_clock_us();
+            }
             cldnn::moe_weights shell_params = instance._weights;
             auto& engine = instance.get_network().get_engine();
             uint32_t* p_expert = (uint32_t*)batch_mem_ptr->buffer_ptr();
@@ -1565,6 +2132,9 @@ public:
             scratch.moe_fusion_wei_addr.weight[2] = shell_params.down_w;
             scratch.moe_fusion_wei_addr.scale[2] = shell_params.down_s;
             scratch.moe_fusion_wei_addr.zp[2] = shell_params.down_z;
+            if (decode_stats != nullptr) {
+                decode_stats->remap_us += steady_clock_us() - remap_begin_us;
+            }
         }
 
         // gate
@@ -1585,6 +2155,10 @@ public:
 
         {
             // scratch.up = up(x) * silu(gate(x))
+            uint64_t stage_begin_us = 0;
+            if (decode_stats != nullptr) {
+                stage_begin_us = steady_clock_us();
+            }
             auto ret_event = execute_stage(
                 events,
                 instance,
@@ -1593,6 +2167,11 @@ public:
                 {scratch.up},
                 {static_cast<size_t>(max_topk), subgroup_size, static_cast<size_t>(_intermediate_size / N_BLOCK)},
                 {1, subgroup_size, SUBGROUP_NUM});
+            if (decode_stats != nullptr) {
+                ret_event->wait();
+                decode_stats->gate_up_us += steady_clock_us() - stage_begin_us;
+                stage_begin_us = steady_clock_us();
+            }
 
             // scratch.y = down(scratch.up) * weight[expert_no]
             ret_event = execute_stage({ret_event},
@@ -1602,6 +2181,11 @@ public:
                                       {scratch.y},
                                       {static_cast<size_t>(max_topk), subgroup_size, static_cast<size_t>(_hidden_size / N_BLOCK)},
                                       {1, subgroup_size, SUBGROUP_NUM});
+            if (decode_stats != nullptr) {
+                ret_event->wait();
+                decode_stats->down_us += steady_clock_us() - stage_begin_us;
+                stage_begin_us = steady_clock_us();
+            }
 
             // final = sum(scratch.y)
             ret = execute_stage({ret_event},
@@ -1612,6 +2196,10 @@ public:
                                 {static_cast<size_t>(1), static_cast<size_t>(_hidden_size)},
                                 {1, std::min(max_work_group_size, size_t{1024})},
                                 instance.needs_completion_event());
+            if (decode_stats != nullptr) {
+                ret->wait();
+                decode_stats->reduce_us += steady_clock_us() - stage_begin_us;
+            }
         }
         return ret;
     }
@@ -2167,6 +2755,22 @@ public:
 
         auto [hidden_states_mem_ptr, hidden_states_layout] = get_input_info(instance, static_cast<size_t>(MOE3GemmInputIndex::HIDDEN_STATES));
         size_t token_num = get_seq_len(hidden_states_layout);
+        const bool enable_lru_stats = cldnn::lru_expert_num && lru_stats_enabled();
+        const bool enable_decode_profile = token_num == 1 && decode_profile_enabled();
+        lru_exec_stats exec_stats;
+        decode_exec_stats decode_stats;
+        std::unique_ptr<scoped_lru_exec_stats> scoped_stats;
+        std::unique_ptr<scoped_decode_exec_stats> scoped_decode_stats;
+        uint64_t execute_begin_us = 0;
+        if (enable_lru_stats || enable_decode_profile) {
+            execute_begin_us = steady_clock_us();
+        }
+        if (enable_lru_stats) {
+            scoped_stats = std::make_unique<scoped_lru_exec_stats>(&exec_stats);
+        }
+        if (enable_decode_profile) {
+            scoped_decode_stats = std::make_unique<scoped_decode_exec_stats>(&decode_stats);
+        }
 
         if (cldnn::lru_expert_num) {
             if (!cache.m_initialized) {
@@ -2190,6 +2794,10 @@ public:
 
         // softmax+topk
         auto lws_size = config.num_expert;
+        uint64_t topk_begin_us = 0;
+        if (enable_decode_profile) {
+            topk_begin_us = steady_clock_us();
+        }
         auto topk_event = execute_stage(events,
                                         instance,
                                         *softmax_topk,
@@ -2202,7 +2810,21 @@ public:
         // Single token is a special case, we don't need to do gather/scatter,
         // and we can apply optimal kernels against memory bound to improve performance.
         if (token_num == 1) {
-            return exec_single_token({topk_event}, instance, scratch, cache);
+            if (enable_decode_profile) {
+                topk_event->wait();
+                decode_stats.topk_us = steady_clock_us() - topk_begin_us;
+            }
+            auto ret = exec_single_token({topk_event}, instance, scratch, cache, enable_decode_profile ? &decode_stats : nullptr);
+            if (enable_decode_profile) {
+                ret->wait();
+                decode_stats.total_us = steady_clock_us() - execute_begin_us;
+                log_decode_profile_execute(cur_moe->id, decode_stats);
+            }
+            if (enable_lru_stats) {
+                ret->wait();
+                log_lru_stats_execute(cur_moe->id, token_num, exec_stats, steady_clock_us() - execute_begin_us);
+            }
+            return ret;
         }
 
         // onednn path will accumulate to the output
@@ -2223,6 +2845,11 @@ public:
             ret_env = exec_prefill_micro_gemm({topk_event}, instance, scratch, cache, use_gpu_mask_gen);
         } else {
             ret_env = exec_prefill_onednn({topk_event}, stream, instance, scratch, cache);
+        }
+
+        if (enable_lru_stats) {
+            ret_env->wait();
+            log_lru_stats_execute(cur_moe->id, token_num, exec_stats, steady_clock_us() - execute_begin_us);
         }
 
         // Wait for the final event to be ready
