@@ -233,8 +233,7 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
                                      const cldnn::layout& layout,
                                      std::vector<uint8_t>& payload,
                                      size_t per_expert_size) {
-    const bool transpose_scale_zp = std::getenv("MOE_OTD_DISABLE_SCALE_ZP_TRANSPOSE") == nullptr;
-    if (!transpose_scale_zp || tensor_name == nullptr) {
+    if (tensor_name == nullptr) {
         return;
     }
 
@@ -251,7 +250,6 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
     size_t ic = 0;
     if (name.rfind("down_", 0) == 0) {
         oc = static_cast<size_t>(desc._config.hidden_size);
-        // GEMM2: down weight K = inter_size/2 (post-swiglu); GEMM3: K = inter_size
         ic = is_gemm2 ? static_cast<size_t>(desc._config.inter_size / 2) : static_cast<size_t>(desc._config.inter_size);
     } else {
         oc = static_cast<size_t>(desc._config.inter_size);
@@ -265,8 +263,6 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
         group_count = ic / group_size;
     }
 
-    // Per-tensor quantization: scale/zp is a single scalar per expert.
-    // Nothing to transpose (shape [experts, 1, 1]).
     if (group_size == 0 || group_size == std::numeric_limits<size_t>::max()) {
         return;
     }
@@ -285,6 +281,7 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
                         ", got=",
                         per_expert_size);
 
+        // Transpose from IR layout [oc, group_count] to oneDNN scale layout [group_count, oc]
         std::vector<uint8_t> transposed(per_expert_size, 0);
         for (size_t o = 0; o < oc; o++) {
             for (size_t g = 0; g < group_count; g++) {

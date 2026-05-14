@@ -983,6 +983,7 @@ public:
     float _expert_alpha = 0.0f;   // GEMM2: clamp bounds [-alpha, +alpha]
     float _expert_beta = 1.0f;    // GEMM2: swish beta
     size_t _gate_idx = 0;         // GEMM2: gate lane index in interleaved output
+    float _scale_factor = -1.0f;  // GEMM2: activations scale factor (negative = disabled)
 
     bool _has_shared_expert = false;
     // Shared expert primitives
@@ -1077,6 +1078,7 @@ public:
             _expert_alpha = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.expert_alpha;
             _expert_beta = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.expert_beta;
             _gate_idx = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.gate_idx;
+            _scale_factor = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.scale_factor.value_or(-1.0f);
             // GEMM2+OTD only supports onednn path (no GPU-kernel stages for now)
             use_micro_gemm_prefill = false;
             use_grouped_gemm_prefill = false;
@@ -1404,6 +1406,7 @@ public:
         cur_moe->_expert_alpha = _expert_alpha;
         cur_moe->_expert_beta = _expert_beta;
         cur_moe->_gate_idx = _gate_idx;
+        cur_moe->_scale_factor = _scale_factor;
         return cur_moe;
     }
 
@@ -2376,9 +2379,11 @@ public:
                           size_t expert_no,
                           float alpha,
                           float beta,
-                          size_t gate_idx) {
+                          size_t gate_idx,
+                          float scale_factor) {
         const int out_dim = _intermediate_size;      // 2 * actual_inter
         const int actual_inter = out_dim / 2;        // after stride-2 split
+        const bool has_scale = scale_factor > 0.0f;
 
         // Read gate_up from GPU
         std::vector<ov::float16> gate_up_data(static_cast<size_t>(n_tokens) * out_dim);
@@ -2412,13 +2417,25 @@ public:
                     up_val += static_cast<float>(bias_data[i * 2 + (1 - gate_idx)]);
                 }
 
-                // SiLU(gate) * up  — SiLU(x) = x * sigmoid(beta * x)
-                float sigmoid_val = 1.0f / (1.0f + std::exp(-beta * gate_val));
-                float act = gate_val * sigmoid_val * up_val;
+                // Restore original scale before clamp/swish (matches swiglu_gpu_ref.cl)
+                if (has_scale) {
+                    gate_val *= scale_factor;
+                    up_val *= scale_factor;
+                }
 
-                // clamp
+                // Clamp gate (max only) and up (both min and max) — matches GPU kernel
                 if (alpha > 0.0f) {
-                    act = std::max(-alpha, std::min(alpha, act));
+                    gate_val = std::min(gate_val, alpha);
+                    up_val = std::max(-alpha, std::min(up_val, alpha));
+                }
+
+                // SiLU(gate) = gate * sigmoid(beta * gate)
+                float sigmoid_val = 1.0f / (1.0f + std::exp(-beta * gate_val));
+                float act = (up_val + 1.0f) * gate_val * sigmoid_val;
+
+                // Rescale back to compressed range
+                if (has_scale) {
+                    act /= scale_factor;
                 }
 
                 out_row[i] = ov::float16(act);
@@ -2459,8 +2476,8 @@ public:
 
         for (int t = 0; t < n_tokens; t++) {
             ov::float16* row = &y_data[static_cast<size_t>(t) * _hidden_size];
-            // routing weight for this gathered token — stored at [t * max_topk] (first topk entry)
-            float rw = static_cast<float>(rw_data[static_cast<size_t>(t) * max_topk]);
+            // routing weight for this gathered token — gather kernel writes one scalar per token at dst_rweight[k]
+            float rw = static_cast<float>(rw_data[static_cast<size_t>(t)]);
 
             for (int h = 0; h < _hidden_size; h++) {
                 float val = static_cast<float>(row[h]);
@@ -2618,7 +2635,7 @@ public:
 
                 // 2. CPU: bias_up + stride-2 swiglu + clamp → up[n, inter/2]
                 gemm2_cpu_swiglu(stream, n_token, scratch.gate, scratch.up, instance._weights.bias_up,
-                                 expert_no, _expert_alpha, _expert_beta, _gate_idx);
+                                 expert_no, _expert_alpha, _expert_beta, _gate_idx, _scale_factor);
 
                 // 3. down GEMM: up[n, inter/2] @ W[inter/2, hidden] → y[n, hidden]
                 int actual_inter = _intermediate_size / 2;
@@ -2984,14 +3001,10 @@ public:
         auto lws_size = config.num_expert;
         cldnn::event::ptr topk_event;
         if (_is_gemm2) {
-            // GEMM2: routing is pre-computed — copy topk_weights and topk_idx from inputs
-            auto& stream = instance.get_network().get_stream();
-            auto topk_w_input = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_WEIGHTS));
-            auto topk_id_input = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_INDICES));
-            auto topk_w_bytes = topk_w_input->get_layout().bytes_count();
-            auto topk_id_bytes = topk_id_input->get_layout().bytes_count();
-            scratch.topk_weights->copy_from(stream, *topk_w_input, 0, 0, topk_w_bytes, true);
-            scratch.topk_id->copy_from(stream, *topk_id_input, 0, 0, topk_id_bytes, true);
+            // GEMM2: routing is pre-computed — use input buffers directly
+            // (scratch.topk_* may be smaller than the actual dynamic token count)
+            scratch.topk_weights = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_WEIGHTS));
+            scratch.topk_id = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_INDICES));
             topk_event = events.empty() ? nullptr : events[0];
         } else if (config.routing_type == ov::op::internal::MOECompressed::RoutingType::SOFTMAX) {
             topk_event = execute_stage(events,
