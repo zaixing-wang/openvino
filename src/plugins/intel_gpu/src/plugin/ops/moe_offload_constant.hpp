@@ -14,6 +14,7 @@
 #include "intel_gpu/op/moe_3gemm_fused_compressed.hpp"
 #include "intel_gpu/plugin/program_builder.hpp"
 #include "openvino/op/constant.hpp"
+#include "ov_ops/moe_compressed.hpp"
 
 namespace ov::intel_gpu::moe_offload {
 
@@ -28,7 +29,8 @@ inline bool is_moe_related_constant(const std::shared_ptr<ov::op::v0::Constant>&
     const auto users = op->get_output_target_inputs(0);
     for (const auto& input : users) {
         const auto* node = input.get_node();
-        if (ov::is_type<ov::intel_gpu::op::MOE3GemmFusedCompressed>(node)) {
+        if (ov::is_type<ov::intel_gpu::op::MOE3GemmFusedCompressed>(node) ||
+            ov::is_type<ov::op::internal::MOECompressed>(node)) {
             return true;
         }
     }

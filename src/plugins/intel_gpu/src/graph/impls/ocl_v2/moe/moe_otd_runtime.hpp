@@ -245,11 +245,14 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
         return;
     }
 
+    const bool is_gemm2 = desc._config.expert_type == ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP;
+
     size_t oc = 0;
     size_t ic = 0;
     if (name.rfind("down_", 0) == 0) {
         oc = static_cast<size_t>(desc._config.hidden_size);
-        ic = static_cast<size_t>(desc._config.inter_size);
+        // GEMM2: down weight K = inter_size/2 (post-swiglu); GEMM3: K = inter_size
+        ic = is_gemm2 ? static_cast<size_t>(desc._config.inter_size / 2) : static_cast<size_t>(desc._config.inter_size);
     } else {
         oc = static_cast<size_t>(desc._config.inter_size);
         ic = static_cast<size_t>(desc._config.hidden_size);

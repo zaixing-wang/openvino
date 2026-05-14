@@ -73,16 +73,18 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
             return false;
         }
 
-        // Only support zp: u4, i4, u8, i8
-        static constexpr std::array supported_zp_type = {
-            ov::element::u4,  // asym-quant type
-            ov::element::i4,  // sym-quant type
-            ov::element::u8,  // asym-quant type
-            ov::element::i8,  // sym-quant type
-        };
-        const auto& zp_layout = node.get_input_layout(zp_idx);
-        if (!one_of(zp_layout.data_type, supported_zp_type)) {
-            return false;
+        // Only support zp: u4, i4, u8, i8 (skip check when has_zp=false, dummy zp reuses scale)
+        if (desc->_config.has_zp) {
+            static constexpr std::array supported_zp_type = {
+                ov::element::u4,  // asym-quant type
+                ov::element::i4,  // sym-quant type
+                ov::element::u8,  // asym-quant type
+                ov::element::i8,  // sym-quant type
+            };
+            const auto& zp_layout = node.get_input_layout(zp_idx);
+            if (!one_of(zp_layout.data_type, supported_zp_type)) {
+                return false;
+            }
         }
 
         return true;

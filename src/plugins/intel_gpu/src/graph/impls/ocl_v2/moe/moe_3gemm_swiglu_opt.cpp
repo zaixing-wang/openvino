@@ -2546,20 +2546,28 @@ public:
         if (dnnl_weights[i].ic_group_size <= 0) {                                                                                                      \
             /* Per-tensor scale/zp: single scalar per expert */                                                                                        \
             int64_t scale_offset_pt##i = lru_expert_no * 1 * 2;   /* 1 f16 element = 2 bytes */                                                       \
-            int64_t zp_offset_pt##i = lru_expert_no * 1;          /* 1 u8 element = 1 byte */                                                         \
             dnnl_weights[i].scale = convert2dnnl(params.name##_s, {1}, dnnl::memory::format_tag::a, scale_offset_pt##i);                               \
-            dnnl_weights[i].zp = convert2dnnl(params.name##_z, {1}, dnnl::memory::format_tag::a, zp_offset_pt##i);                                    \
+            if (params.name##_z) {                                                                                                                     \
+                int64_t zp_offset_pt##i = lru_expert_no * 1;          /* 1 u8 element = 1 byte */                                                      \
+                dnnl_weights[i].zp = convert2dnnl(params.name##_z, {1}, dnnl::memory::format_tag::a, zp_offset_pt##i);                                 \
+            } else {                                                                                                                                   \
+                dnnl_weights[i].zp = dnnl::memory();                                                                                                   \
+            }                                                                                                                                          \
         } else {                                                                                                                                       \
             int64_t scale_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;                     \
-            int64_t zp_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;                        \
             dnnl_weights[i].scale = convert2dnnl(params.name##_s,                                                                                      \
                                                  {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                             \
                                                  dnnl::memory::format_tag::ab,                                                                         \
                                                  scale_offset##i);                                                                                     \
-            dnnl_weights[i].zp = convert2dnnl(params.name##_z,                                                                                         \
-                                              {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                                \
-                                              dnnl::memory::format_tag::ab,                                                                            \
-                                              zp_offset##i);                                                                                           \
+            if (params.name##_z) {                                                                                                                     \
+                int64_t zp_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;                    \
+                dnnl_weights[i].zp = convert2dnnl(params.name##_z,                                                                                     \
+                                                  {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                            \
+                                                  dnnl::memory::format_tag::ab,                                                                        \
+                                                  zp_offset##i);                                                                                       \
+            } else {                                                                                                                                   \
+                dnnl_weights[i].zp = dnnl::memory();                                                                                                   \
+            }                                                                                                                                          \
         }
                 if (_is_gemm2) {
                     // GEMM2: gate_w holds gate_up fused, down_w holds down
@@ -2938,13 +2946,17 @@ public:
                     // GEMM2 OTD: gate_w stores gate_up fused, up_w is null
                     instance._weights.gate_w = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_WEIGHT));
                     instance._weights.gate_s = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_SCALE));
-                    instance._weights.gate_z = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_ZP));
+                    instance._weights.gate_z = config.has_zp
+                        ? instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_ZP))
+                        : nullptr;
                     instance._weights.up_w = nullptr;
                     instance._weights.up_s = nullptr;
                     instance._weights.up_z = nullptr;
                     instance._weights.down_w = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_WEIGHT));
                     instance._weights.down_s = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_SCALE));
-                    instance._weights.down_z = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_ZP));
+                    instance._weights.down_z = config.has_zp
+                        ? instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_ZP))
+                        : nullptr;
                     instance._weights.bias_up = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::BIAS_UP));
                     instance._weights.bias_down = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::BIAS_DOWN));
                 } else {
