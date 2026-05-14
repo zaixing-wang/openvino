@@ -15,6 +15,7 @@
 #ifdef ENABLE_ONEDNN_FOR_GPU
 #    include <algorithm>
 #    include <chrono>
+#    include <cmath>
 #    include <cstdint>
 #    include <fstream>
 #    include <initializer_list>
@@ -978,6 +979,10 @@ public:
     size_t _lru_expert_num = 0;
     std::shared_ptr<LRUCache> _lru_cache;
     ov::op::internal::MOE::Activation_type _activation_type = ov::op::internal::MOE::Activation_type::SWIGLU;
+    bool _is_gemm2 = false;       // GEMM2_BIAS_SWIGLU_CLAMP mode (gpt-oss)
+    float _expert_alpha = 0.0f;   // GEMM2: clamp bounds [-alpha, +alpha]
+    float _expert_beta = 1.0f;    // GEMM2: swish beta
+    size_t _gate_idx = 0;         // GEMM2: gate lane index in interleaved output
 
     bool _has_shared_expert = false;
     // Shared expert primitives
@@ -1064,20 +1069,44 @@ public:
             GPU_DEBUG_TRACE_DETAIL << "[DEBUG] moe_3gemm_swiglu_opt_impl(): force disable grouped_gemm prefill in OTD mode, lru_expert_num=" << _lru_expert_num
                                    << std::endl;
         }
-        // Don't change the order of stages
-        auto routing_type = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.routing_type;
-        if (routing_type == ov::op::internal::MOECompressed::RoutingType::SOFTMAX) {
-            add_stage(softmax_topk, params);
-        } else if (routing_type == ov::op::internal::MOECompressed::RoutingType::SIGMOID_BIAS) {
-            add_stage(sigmoid_bias_topk, params);
-        } else {
-            OPENVINO_THROW("Unsupported routing type for moe_3gemm_swiglu_opt_impl: ", static_cast<int>(routing_type));
+
+        // Detect GEMM2 mode
+        _is_gemm2 = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.expert_type
+                     == ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP;
+        if (_is_gemm2) {
+            _expert_alpha = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.expert_alpha;
+            _expert_beta = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.expert_beta;
+            _gate_idx = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.gate_idx;
+            // GEMM2+OTD only supports onednn path (no GPU-kernel stages for now)
+            use_micro_gemm_prefill = false;
+            use_grouped_gemm_prefill = false;
+            GPU_DEBUG_TRACE_DETAIL << "[DEBUG] moe_3gemm_swiglu_opt_impl(): GEMM2 mode, expert_alpha=" << _expert_alpha
+                                   << ", expert_beta=" << _expert_beta << ", gate_idx=" << _gate_idx << std::endl;
         }
+
+        // Don't change the order of stages
+        if (!_is_gemm2) {
+            // GEMM3: routing is raw logits → softmax+topk inside
+            auto routing_type = node.as<moe_3gemm_fused_compressed>().get_primitive()->_config.routing_type;
+            if (routing_type == ov::op::internal::MOECompressed::RoutingType::SOFTMAX) {
+                add_stage(softmax_topk, params);
+            } else if (routing_type == ov::op::internal::MOECompressed::RoutingType::SIGMOID_BIAS) {
+                add_stage(sigmoid_bias_topk, params);
+            } else {
+                OPENVINO_THROW("Unsupported routing type for moe_3gemm_swiglu_opt_impl: ", static_cast<int>(routing_type));
+            }
+        }
+        // GEMM2: routing is pre-computed (topk_weights + topk_indices as inputs)
+        // No softmax/topk stage needed.
         add_stage(gather, params);
         add_stage(scatter, params);
-        add_stage(mlp_gate_up, params);
-        add_stage(mlp_down, params);
-        add_stage(mlp_reduce, params);
+        if (!_is_gemm2) {
+            // These single-token OCL kernels assume GEMM3 input layout (separate gate/up/down weights).
+            // GEMM2 always uses exec_prefill_onednn which doesn't need these stages.
+            add_stage(mlp_gate_up, params);
+            add_stage(mlp_down, params);
+            add_stage(mlp_reduce, params);
+        }
         if (use_micro_gemm_prefill) {
             add_stage(prefill_mask_gen, params);
             add_stage(prefill_gather, params);
@@ -1102,8 +1131,10 @@ public:
         _activation_type = cur_moe->_config.activation_type;
 
         if (cur_moe->_config.group_size == std::numeric_limits<size_t>::max()) {
-            _gate_up_group_size = static_cast<int>(cur_moe->_config.hidden_size);
-            _down_group_size = static_cast<int>(cur_moe->_config.inter_size);
+            // Per-tensor quantization: ic_group_size = -1 triggers scalar scale/zp
+            // in onednn_matmul::w_scale (k_group_size <= 0 → dims {1}).
+            _gate_up_group_size = -1;
+            _down_group_size = -1;
         }
         GPU_DEBUG_TRACE_DETAIL << "[DEBUG] moe_3gemm_swiglu_opt prefill: group_size=" << cur_moe->_config.group_size
                                << ", gate_up_group_size=" << _gate_up_group_size << ", down_group_size=" << _down_group_size << std::endl;
@@ -1131,28 +1162,47 @@ public:
 
         _dnnl_weights.resize(cur_moe->_config.num_expert);
         // Per-GEMM ic_group_size from scale shape; config.group_size can't represent gate/up vs down differing.
+        // Returns -1 for per-tensor (scale_shape [E,1,1]), ic for per-channel ([E,N,1]), ic/num_groups for per-group.
         const auto ic_group_size_from_scale = [](size_t ic, const cldnn::memory::ptr& scale_mem) {
             const auto& scale_shape = scale_mem->get_layout().get_shape();
+            const size_t oc_dim = (scale_shape.size() >= 2) ? scale_shape[1] : 1;
             const size_t num_groups = (scale_shape.size() >= 3) ? scale_shape[2] : 1;
+            if (oc_dim <= 1 && num_groups <= 1)
+                return static_cast<int>(-1);  // per-tensor
             return (num_groups <= 1) ? static_cast<int>(ic) : static_cast<int>(ic / num_groups);
         };
+        const int num_gemms = _is_gemm2 ? 2 : 3;
         for (size_t j = 0; j < cur_moe->_config.num_expert; j++) {
             auto& dnnl_weights = _dnnl_weights[j];
-            dnnl_weights.resize(3);
-            dnnl_weights[0].ic = _hidden_size;
-            dnnl_weights[0].ic_group_size =
-                moe_fusion_wei_addr.scale[0] ? ic_group_size_from_scale(_hidden_size, moe_fusion_wei_addr.scale[0]) : _gate_up_group_size;
-            dnnl_weights[0].oc = _intermediate_size;
-            dnnl_weights[1].ic = _hidden_size;
-            dnnl_weights[1].ic_group_size =
-                moe_fusion_wei_addr.scale[1] ? ic_group_size_from_scale(_hidden_size, moe_fusion_wei_addr.scale[1]) : _gate_up_group_size;
-            dnnl_weights[1].oc = _intermediate_size;
-            dnnl_weights[2].ic = _intermediate_size;
-            dnnl_weights[2].ic_group_size =
-                moe_fusion_wei_addr.scale[2] ? ic_group_size_from_scale(_intermediate_size, moe_fusion_wei_addr.scale[2]) : _down_group_size;
-            dnnl_weights[2].oc = _hidden_size;
+            dnnl_weights.resize(num_gemms);
+            if (_is_gemm2) {
+                // GEMM2: gate_up fused [hidden, 2*inter], down [inter, hidden]
+                // config.inter_size = 2*actual_intermediate for GEMM2
+                dnnl_weights[0].ic = _hidden_size;
+                dnnl_weights[0].ic_group_size =
+                    moe_fusion_wei_addr.scale[0] ? ic_group_size_from_scale(_hidden_size, moe_fusion_wei_addr.scale[0]) : _gate_up_group_size;
+                dnnl_weights[0].oc = _intermediate_size;  // 2*actual_inter
+                dnnl_weights[1].ic = _intermediate_size / 2;  // actual_inter (after swiglu stride-2)
+                dnnl_weights[1].ic_group_size =
+                    moe_fusion_wei_addr.scale[2] ? ic_group_size_from_scale(_intermediate_size / 2, moe_fusion_wei_addr.scale[2]) : _down_group_size;
+                dnnl_weights[1].oc = _hidden_size;
+            } else {
+                // GEMM3: gate, up, down — 3 separate matrices
+                dnnl_weights[0].ic = _hidden_size;
+                dnnl_weights[0].ic_group_size =
+                    moe_fusion_wei_addr.scale[0] ? ic_group_size_from_scale(_hidden_size, moe_fusion_wei_addr.scale[0]) : _gate_up_group_size;
+                dnnl_weights[0].oc = _intermediate_size;
+                dnnl_weights[1].ic = _hidden_size;
+                dnnl_weights[1].ic_group_size =
+                    moe_fusion_wei_addr.scale[1] ? ic_group_size_from_scale(_hidden_size, moe_fusion_wei_addr.scale[1]) : _gate_up_group_size;
+                dnnl_weights[1].oc = _intermediate_size;
+                dnnl_weights[2].ic = _intermediate_size;
+                dnnl_weights[2].ic_group_size =
+                    moe_fusion_wei_addr.scale[2] ? ic_group_size_from_scale(_intermediate_size, moe_fusion_wei_addr.scale[2]) : _down_group_size;
+                dnnl_weights[2].oc = _hidden_size;
+            }
             if (!_lru_expert_num) {
-                for (int i = 0; i < 3; i++) {
+                for (int i = 0; i < num_gemms; i++) {
                     // Cross-check ic/ic_group_size against scale shape (drift caused u8 inf bug).
                     {
                         const auto& sshape = moe_fusion_wei_addr.scale[i]->get_layout().get_shape();
@@ -1350,6 +1400,10 @@ public:
         cur_moe->_lru_expert_num = _lru_expert_num;
         cur_moe->_lru_cache = _lru_cache;  // shared across clones within the same network
         cur_moe->_activation_type = _activation_type;
+        cur_moe->_is_gemm2 = _is_gemm2;
+        cur_moe->_expert_alpha = _expert_alpha;
+        cur_moe->_expert_beta = _expert_beta;
+        cur_moe->_gate_idx = _gate_idx;
         return cur_moe;
     }
 
@@ -1429,7 +1483,9 @@ public:
         scratch.topk_weights = intermediates_memories[MOE_INTERNAL_BUFFER_TOPK_WEIGHTS];
         scratch.up = intermediates_memories[MOE_INTERNAL_BUFFER_UP_OUTPUT];
         scratch.y = intermediates_memories[MOE_INTERNAL_BUFFER_DOWN_OUTPUT];
-        if (token_num > 1) {
+        if (token_num > 1 || _is_gemm2) {
+            // GEMM2 always uses exec_prefill_onednn (even for single token),
+            // so scratch.x/gate/routing_weights must always be allocated.
             scratch.x = intermediates_memories[MOE_INTERNAL_BUFFER_GATE_UP_INPUT];
             scratch.routing_weights = intermediates_memories[MOE_INTERNAL_BUFFER_ROUTING_WEIGHTS];
             scratch.gate = intermediates_memories[MOE_INTERNAL_BUFFER_GATE_OUTPUT];
@@ -1446,6 +1502,18 @@ public:
         }
 
         if (!_lru_expert_num) {
+            if (_is_gemm2) {
+                // GEMM2: gate_up fused in slot[0], down in slot[2]; slot[1]="up" unused
+                scratch.moe_fusion_wei_addr.weight[0] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_WEIGHT));
+                scratch.moe_fusion_wei_addr.scale[0] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_SCALE));
+                scratch.moe_fusion_wei_addr.zp[0] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_ZP));
+                scratch.moe_fusion_wei_addr.weight[1] = nullptr;
+                scratch.moe_fusion_wei_addr.scale[1] = nullptr;
+                scratch.moe_fusion_wei_addr.zp[1] = nullptr;
+                scratch.moe_fusion_wei_addr.weight[2] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_WEIGHT));
+                scratch.moe_fusion_wei_addr.scale[2] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_SCALE));
+                scratch.moe_fusion_wei_addr.zp[2] = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_ZP));
+            } else {
             // gate
             scratch.moe_fusion_wei_addr.weight[0] = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_0));
             scratch.moe_fusion_wei_addr.scale[0] = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::SCALE_0));
@@ -1482,6 +1550,7 @@ public:
                 // Scalar Gate - f16
                 scratch.moe_fusion_wei_addr.shared_weight[3] = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::SHARED_GATE_GATE_WEIGHT));
             }
+            }  // end else (GEMM3)
         }
     }
 
@@ -2120,6 +2189,35 @@ public:
         auto& dnnl_weights = _dnnl_weights[expert_no];
         auto kernel = std::make_shared<onednn_kernel>();
 
+        if (_is_gemm2) {
+            // GEMM2: gate_up fused plain matmul (activation done separately), down plain matmul
+            auto gate_up_wt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_WEIGHT))->get_layout().data_type);
+            kernel->gate = onednn_linear::create(dnn_stream.get_engine(),
+                                                 hidden_states_layout_dt,
+                                                 gate_up_wt,
+                                                 n_token,
+                                                 dnnl_weights[0].ic,
+                                                 dnnl_weights[0].oc,
+                                                 dnnl_weights[0].ic_group_size,
+                                                 onednn_matmul::type::none,
+                                                 dnnl_weights[0].weight,
+                                                 dnnl_weights[0].scale,
+                                                 dnnl_weights[0].zp);
+
+            auto down_wt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_WEIGHT))->get_layout().data_type);
+            kernel->down = onednn_linear::create(dnn_stream.get_engine(),
+                                                 hidden_states_layout_dt,
+                                                 down_wt,
+                                                 n_token,
+                                                 dnnl_weights[1].ic,
+                                                 dnnl_weights[1].oc,
+                                                 dnnl_weights[1].ic_group_size,
+                                                 onednn_matmul::type::none,
+                                                 dnnl_weights[1].weight,
+                                                 dnnl_weights[1].scale,
+                                                 dnnl_weights[1].zp);
+            // kernel.up is not used for GEMM2
+        } else {
         // gate
         auto gate_weight_layout_dt = convert_data_type(instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_0))->get_layout().data_type);
         kernel->gate = onednn_linear::create(dnn_stream.get_engine(),
@@ -2162,6 +2260,7 @@ public:
                                              dnnl_weights[2].weight,
                                              dnnl_weights[2].scale,
                                              dnnl_weights[2].zp);
+        }
         // each time dnnl_weights updated need refresh kernel cache in OTD mode, if not, the stream engine context and memory storage engine context will
         // mismatch, dnnl kernel will report invalid_arguments and fail or compute wrong and output wrong tokens. if any perf concerns, need deep dive here.
         if (_lru_expert_num) {
@@ -2266,6 +2365,116 @@ public:
         return *_grouped_kernels.get(key);
     }
 
+    //  CPU-side stride-2 SwiGLU+bias+clamp for GEMM2 prefill path.
+    //  gate_up_buf: [n_tokens, 2*inter] → swiglu_out: [n_tokens, inter]
+    //  For each token: split into gate/up by stride-2, add bias, SiLU(gate)*up, clamp.
+    void gemm2_cpu_swiglu(cldnn::stream& stream,
+                          int n_tokens,
+                          cldnn::memory::ptr gate_up_buf,
+                          cldnn::memory::ptr swiglu_out,
+                          cldnn::memory::ptr bias_up_mem,
+                          size_t expert_no,
+                          float alpha,
+                          float beta,
+                          size_t gate_idx) {
+        const int out_dim = _intermediate_size;      // 2 * actual_inter
+        const int actual_inter = out_dim / 2;        // after stride-2 split
+
+        // Read gate_up from GPU
+        std::vector<ov::float16> gate_up_data(static_cast<size_t>(n_tokens) * out_dim);
+        gate_up_buf->copy_to(stream, gate_up_data.data(), 0, 0, gate_up_data.size() * sizeof(ov::float16), true);
+
+        // Read per-expert bias slice (shape: [experts, 1, 2*inter])
+        std::vector<ov::float16> bias_data;
+        if (bias_up_mem) {
+            auto total_bytes = bias_up_mem->get_layout().bytes_count();
+            std::vector<ov::float16> full_bias(total_bytes / sizeof(ov::float16));
+            bias_up_mem->copy_to(stream, full_bias.data(), 0, 0, total_bytes, true);
+            // Extract slice for this expert
+            bias_data.assign(full_bias.begin() + expert_no * out_dim,
+                             full_bias.begin() + (expert_no + 1) * out_dim);
+        }
+
+        std::vector<ov::float16> result(static_cast<size_t>(n_tokens) * actual_inter);
+
+        for (int t = 0; t < n_tokens; t++) {
+            const ov::float16* row = &gate_up_data[static_cast<size_t>(t) * out_dim];
+            ov::float16* out_row = &result[static_cast<size_t>(t) * actual_inter];
+
+            for (int i = 0; i < actual_inter; i++) {
+                // stride-2 de-interleave
+                float gate_val = static_cast<float>(row[i * 2 + gate_idx]);
+                float up_val = static_cast<float>(row[i * 2 + (1 - gate_idx)]);
+
+                // add bias
+                if (!bias_data.empty()) {
+                    gate_val += static_cast<float>(bias_data[i * 2 + gate_idx]);
+                    up_val += static_cast<float>(bias_data[i * 2 + (1 - gate_idx)]);
+                }
+
+                // SiLU(gate) * up  — SiLU(x) = x * sigmoid(beta * x)
+                float sigmoid_val = 1.0f / (1.0f + std::exp(-beta * gate_val));
+                float act = gate_val * sigmoid_val * up_val;
+
+                // clamp
+                if (alpha > 0.0f) {
+                    act = std::max(-alpha, std::min(alpha, act));
+                }
+
+                out_row[i] = ov::float16(act);
+            }
+        }
+
+        // Write result back to GPU
+        swiglu_out->copy_from(stream, result.data(), 0, 0, result.size() * sizeof(ov::float16), true);
+    }
+
+    //  CPU-side bias addition + routing weight multiplication for GEMM2 down output.
+    //  y_buf: [n_tokens, hidden] → y_buf: [n_tokens, hidden]
+    void gemm2_cpu_bias_route(cldnn::stream& stream,
+                              int n_tokens,
+                              cldnn::memory::ptr y_buf,
+                              cldnn::memory::ptr bias_down_mem,
+                              cldnn::memory::ptr routing_weights_mem,
+                              size_t expert_no,
+                              int64_t max_topk) {
+        std::vector<ov::float16> y_data(static_cast<size_t>(n_tokens) * _hidden_size);
+        y_buf->copy_to(stream, y_data.data(), 0, 0, y_data.size() * sizeof(ov::float16), true);
+
+        // Read per-expert bias_down slice (shape: [experts, 1, hidden])
+        std::vector<ov::float16> bias_data;
+        if (bias_down_mem) {
+            auto total_bytes = bias_down_mem->get_layout().bytes_count();
+            std::vector<ov::float16> full_bias(total_bytes / sizeof(ov::float16));
+            bias_down_mem->copy_to(stream, full_bias.data(), 0, 0, total_bytes, true);
+            bias_data.assign(full_bias.begin() + expert_no * _hidden_size,
+                             full_bias.begin() + (expert_no + 1) * _hidden_size);
+        }
+
+        // Read routing weights [n_tokens * max_topk]
+        auto rw_bytes = routing_weights_mem->get_layout().bytes_count();
+        auto rw_count = rw_bytes / sizeof(ov::float16);
+        std::vector<ov::float16> rw_data(rw_count);
+        routing_weights_mem->copy_to(stream, rw_data.data(), 0, 0, rw_bytes, true);
+
+        for (int t = 0; t < n_tokens; t++) {
+            ov::float16* row = &y_data[static_cast<size_t>(t) * _hidden_size];
+            // routing weight for this gathered token — stored at [t * max_topk] (first topk entry)
+            float rw = static_cast<float>(rw_data[static_cast<size_t>(t) * max_topk]);
+
+            for (int h = 0; h < _hidden_size; h++) {
+                float val = static_cast<float>(row[h]);
+                if (!bias_data.empty()) {
+                    val += static_cast<float>(bias_data[h]);
+                }
+                val *= rw;
+                row[h] = ov::float16(val);
+            }
+        }
+
+        y_buf->copy_from(stream, y_data.data(), 0, 0, y_data.size() * sizeof(ov::float16), true);
+    }
+
     //  inputs 0 is hidden_states, inputs 1 is router_logits[num_tokens, NUM_EXPERTS=128]
     //  extra step Softmax_TopK is fused to give topk-id & router_weights
     //
@@ -2333,20 +2542,35 @@ public:
 
 #    define CONVERT_DNNL(name, i)                                                                                                                      \
         int64_t wei_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / 2;                                                           \
-        int64_t scale_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;                         \
-        int64_t zp_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;                            \
         dnnl_weights[i].weight = convert2dnnl(params.name##_w, {dnnl_weights[i].ic, dnnl_weights[i].oc}, dnnl::memory::format_tag::ba, wei_offset##i); \
-        dnnl_weights[i].scale = convert2dnnl(params.name##_s,                                                                                          \
-                                             {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                                 \
-                                             dnnl::memory::format_tag::ab,                                                                             \
-                                             scale_offset##i);                                                                                         \
-        dnnl_weights[i].zp = convert2dnnl(params.name##_z,                                                                                             \
-                                          {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                                    \
-                                          dnnl::memory::format_tag::ab,                                                                                \
-                                          zp_offset##i);
-                CONVERT_DNNL(gate, 0)
-                CONVERT_DNNL(up, 1)
-                CONVERT_DNNL(down, 2)
+        if (dnnl_weights[i].ic_group_size <= 0) {                                                                                                      \
+            /* Per-tensor scale/zp: single scalar per expert */                                                                                        \
+            int64_t scale_offset_pt##i = lru_expert_no * 1 * 2;   /* 1 f16 element = 2 bytes */                                                       \
+            int64_t zp_offset_pt##i = lru_expert_no * 1;          /* 1 u8 element = 1 byte */                                                         \
+            dnnl_weights[i].scale = convert2dnnl(params.name##_s, {1}, dnnl::memory::format_tag::a, scale_offset_pt##i);                               \
+            dnnl_weights[i].zp = convert2dnnl(params.name##_z, {1}, dnnl::memory::format_tag::a, zp_offset_pt##i);                                    \
+        } else {                                                                                                                                       \
+            int64_t scale_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size * 2;                     \
+            int64_t zp_offset##i = lru_expert_no * dnnl_weights[i].ic * dnnl_weights[i].oc / dnnl_weights[i].ic_group_size / 2;                        \
+            dnnl_weights[i].scale = convert2dnnl(params.name##_s,                                                                                      \
+                                                 {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                             \
+                                                 dnnl::memory::format_tag::ab,                                                                         \
+                                                 scale_offset##i);                                                                                     \
+            dnnl_weights[i].zp = convert2dnnl(params.name##_z,                                                                                         \
+                                              {dnnl_weights[i].ic / dnnl_weights[i].ic_group_size, dnnl_weights[i].oc},                                \
+                                              dnnl::memory::format_tag::ab,                                                                            \
+                                              zp_offset##i);                                                                                           \
+        }
+                if (_is_gemm2) {
+                    // GEMM2: gate_w holds gate_up fused, down_w holds down
+                    // dnnl_weights[0] = gate_up, dnnl_weights[1] = down
+                    CONVERT_DNNL(gate, 0)
+                    CONVERT_DNNL(down, 1)
+                } else {
+                    CONVERT_DNNL(gate, 0)
+                    CONVERT_DNNL(up, 1)
+                    CONVERT_DNNL(down, 2)
+                }
 #    undef CONVERT_DNNL
             }
             auto& dnnl_weights = _dnnl_weights[expert_no];
@@ -2374,6 +2598,33 @@ public:
                                          {1, lws_size},
                                          instance.needs_completion_event());
 
+            if (_is_gemm2) {
+                // GEMM2 pipeline: gate_up GEMM → CPU swiglu → down GEMM → CPU bias+route
+                // 1. gate_up GEMM: x[n, hidden] @ W[hidden, 2*inter] → gate[n, 2*inter]
+                kernel.gate.forward(dnn_stream,
+                                    n_token,
+                                    convert2dnnl(scratch.x, {static_cast<int64_t>(n_token), static_cast<int64_t>(_hidden_size)}, dnnl::memory::format_tag::ab),
+                                    convert2dnnl(scratch.gate, {static_cast<int64_t>(n_token), static_cast<int64_t>(_intermediate_size)}, dnnl::memory::format_tag::ab),
+                                    dnnl::memory());
+                dnn_stream.wait();
+
+                // 2. CPU: bias_up + stride-2 swiglu + clamp → up[n, inter/2]
+                gemm2_cpu_swiglu(stream, n_token, scratch.gate, scratch.up, instance._weights.bias_up,
+                                 expert_no, _expert_alpha, _expert_beta, _gate_idx);
+
+                // 3. down GEMM: up[n, inter/2] @ W[inter/2, hidden] → y[n, hidden]
+                int actual_inter = _intermediate_size / 2;
+                kernel.down.forward(dnn_stream,
+                                    n_token,
+                                    convert2dnnl(scratch.up, {static_cast<int64_t>(n_token), static_cast<int64_t>(actual_inter)}, dnnl::memory::format_tag::ab),
+                                    convert2dnnl(scratch.y, {static_cast<int64_t>(n_token), static_cast<int64_t>(_hidden_size)}, dnnl::memory::format_tag::ab),
+                                    dnnl::memory());
+                dnn_stream.wait();
+
+                // 4. CPU: bias_down + routing weight multiply
+                gemm2_cpu_bias_route(stream, n_token, scratch.y, instance._weights.bias_down,
+                                     scratch.routing_weights, expert_no, max_topk);
+            } else {
             // up
             kernel.up.forward(dnn_stream,
                               n_token,
@@ -2392,6 +2643,7 @@ public:
                                 convert2dnnl(scratch.gate, {static_cast<int64_t>(n_token), _intermediate_size}, dnnl::memory::format_tag::ab),
                                 convert2dnnl(scratch.y, {static_cast<int64_t>(n_token), _hidden_size}, dnnl::memory::format_tag::ab),
                                 convert2dnnl(scratch.routing_weights, {static_cast<int64_t>(routing_weights_size)}, dnnl::memory::format_tag::a));
+            }
             // index_add
             result_event = execute_stage({result_event},
                                          instance,
@@ -2682,6 +2934,20 @@ public:
 
         if (_lru_expert_num) {
             if (!cache.m_initialized) {
+                if (_is_gemm2) {
+                    // GEMM2 OTD: gate_w stores gate_up fused, up_w is null
+                    instance._weights.gate_w = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_WEIGHT));
+                    instance._weights.gate_s = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_SCALE));
+                    instance._weights.gate_z = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::GATE_UP_ZP));
+                    instance._weights.up_w = nullptr;
+                    instance._weights.up_s = nullptr;
+                    instance._weights.up_z = nullptr;
+                    instance._weights.down_w = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_WEIGHT));
+                    instance._weights.down_s = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_SCALE));
+                    instance._weights.down_z = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::DOWN_ZP));
+                    instance._weights.bias_up = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::BIAS_UP));
+                    instance._weights.bias_down = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::BIAS_DOWN));
+                } else {
                 instance._weights.gate_w = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_0));
                 instance._weights.gate_z = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::ZP_0));
                 instance._weights.gate_s = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::SCALE_0));
@@ -2693,6 +2959,7 @@ public:
                 instance._weights.down_w = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_2));
                 instance._weights.down_z = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::ZP_2));
                 instance._weights.down_s = instance.input_memory_ptr(static_cast<size_t>(MOE3GemmInputIndex::SCALE_2));
+                }
                 cache.m_initialized = true;
             }
         }
@@ -2701,10 +2968,20 @@ public:
         prepare_internal_buffers(instance, scratch, token_num);
         kernel_dump_info.clear_entries();
 
-        // routing: softmax+topk or sigmoid+bias+topk
+        // routing: softmax+topk or pre-computed (GEMM2)
         auto lws_size = config.num_expert;
         cldnn::event::ptr topk_event;
-        if (config.routing_type == ov::op::internal::MOECompressed::RoutingType::SOFTMAX) {
+        if (_is_gemm2) {
+            // GEMM2: routing is pre-computed — copy topk_weights and topk_idx from inputs
+            auto& stream = instance.get_network().get_stream();
+            auto topk_w_input = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_WEIGHTS));
+            auto topk_id_input = instance.input_memory_ptr(static_cast<size_t>(GEMM2InputIndex::TOPK_INDICES));
+            auto topk_w_bytes = topk_w_input->get_layout().bytes_count();
+            auto topk_id_bytes = topk_id_input->get_layout().bytes_count();
+            scratch.topk_weights->copy_from(stream, *topk_w_input, 0, 0, topk_w_bytes, true);
+            scratch.topk_id->copy_from(stream, *topk_id_input, 0, 0, topk_id_bytes, true);
+            topk_event = events.empty() ? nullptr : events[0];
+        } else if (config.routing_type == ov::op::internal::MOECompressed::RoutingType::SOFTMAX) {
             topk_event = execute_stage(events,
                                        instance,
                                        *softmax_topk,
@@ -2730,7 +3007,9 @@ public:
 
         // Single token is a special case, we don't need to do gather/scatter,
         // and we can apply optimal kernels against memory bound to improve performance.
-        if (token_num == 1) {
+        // GEMM2 always uses exec_prefill_onednn because mlp_gate_up/down OCL kernels
+        // expect separate gate/up weights, which GEMM2 doesn't have.
+        if (token_num == 1 && !_is_gemm2) {
             return exec_single_token({topk_event}, instance, scratch, cache);
         }
 
@@ -2746,7 +3025,9 @@ public:
         const bool use_gpu_mask_gen = use_micro_gemm_prefill && use_gpu_mask_gen_prefill;
         if (!use_gpu_mask_gen) {
             // Wait for topk is ready
-            topk_event->wait();
+            if (topk_event) {
+                topk_event->wait();
+            }
         }
 
         GPU_DEBUG_TRACE_DETAIL << "\nMoE3GemmFusedCompressed exec(): token_num=" << token_num << ", max_topk=" << static_cast<int>(config.top_k)
@@ -2808,3 +3089,4 @@ std::unique_ptr<primitive_impl> moe_3gemm_swiglu_opt::create_impl(const program_
 }  // namespace ov::intel_gpu::ocl
 
 #endif
+ 

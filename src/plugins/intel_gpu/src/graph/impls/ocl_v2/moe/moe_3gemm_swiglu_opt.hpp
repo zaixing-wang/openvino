@@ -10,6 +10,7 @@
 #include "intel_gpu/primitives/activation.hpp"
 #include "intel_gpu/primitives/eltwise.hpp"
 #include "moe_3gemm_base.hpp"
+#include "moe_3gemm_fused_inst.h"
 #include "program_node.h"
 #include "registry/implementation_manager.hpp"
 
@@ -40,6 +41,17 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
             return false;
         }
 
+        // Determine weight/scale/zp input indices based on expert type
+        auto desc = node.as<moe_3gemm_fused_compressed>().get_primitive();
+        const bool is_gemm2 = desc->_config.expert_type
+                              == ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP;
+        const size_t wei_idx = is_gemm2 ? static_cast<size_t>(GEMM2InputIndex::GATE_UP_WEIGHT)
+                                        : static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_0);
+        const size_t scale_idx = is_gemm2 ? static_cast<size_t>(GEMM2InputIndex::GATE_UP_SCALE)
+                                          : static_cast<size_t>(MOE3GemmInputIndex::SCALE_0);
+        const size_t zp_idx = is_gemm2 ? static_cast<size_t>(GEMM2InputIndex::GATE_UP_ZP)
+                                       : static_cast<size_t>(MOE3GemmInputIndex::ZP_0);
+
         // Only support weight: u4, i4, u8, i8
         static constexpr std::array supported_wei_type = {
             ov::element::u4,
@@ -47,7 +59,7 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
             ov::element::u8,
             ov::element::i8,
         };
-        const auto& wei_layout = node.get_input_layout(static_cast<size_t>(MOE3GemmInputIndex::WEIGHT_0));
+        const auto& wei_layout = node.get_input_layout(wei_idx);
         if (!one_of(wei_layout.data_type, supported_wei_type)) {
             return false;
         }
@@ -56,7 +68,7 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
         static constexpr std::array supported_scale_type = {
             ov::element::f16,
         };
-        const auto& scale_layout = node.get_input_layout(static_cast<size_t>(MOE3GemmInputIndex::SCALE_0));
+        const auto& scale_layout = node.get_input_layout(scale_idx);
         if (!one_of(scale_layout.data_type, supported_scale_type)) {
             return false;
         }
@@ -68,7 +80,7 @@ struct moe_3gemm_swiglu_opt : public ImplementationManager {
             ov::element::u8,  // asym-quant type
             ov::element::i8,  // sym-quant type
         };
-        const auto& zp_layout = node.get_input_layout(static_cast<size_t>(MOE3GemmInputIndex::ZP_0));
+        const auto& zp_layout = node.get_input_layout(zp_idx);
         if (!one_of(zp_layout.data_type, supported_zp_type)) {
             return false;
         }

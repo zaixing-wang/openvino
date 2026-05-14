@@ -230,7 +230,7 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
                        ", byte_size=", expected_size);
     };
 
-    const std::array<size_t, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> const_input_idx_by_offset = {
+    const std::array<size_t, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count_gemm3> const_input_idx_by_offset = {
         static_cast<size_t>(input_idx::weight_0),
         static_cast<size_t>(input_idx::weight_1),
         static_cast<size_t>(input_idx::weight_2),
@@ -242,7 +242,7 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
         static_cast<size_t>(input_idx::zp_2)
     };
 
-    std::vector<size_t> weight_bin_offsets(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count, 0);
+    std::vector<size_t> weight_bin_offsets(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count_gemm3, 0);
     // Serialized offsets are only needed for OTD path (weight-on-demand loading).
     if (otd_enabled) {
         for (size_t i = 0; i < const_input_idx_by_offset.size(); i++) {
@@ -309,6 +309,13 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
 static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::op::internal::MOECompressed>& op) {
     auto inputs = p.GetInputInfo(op);
     auto& config = op->get_config();
+    const size_t lru_expert_num = p.get_config().get_moe_offload_max_experts();
+    const bool otd_enabled = lru_expert_num > 0;
+    GPU_DEBUG_TRACE_DETAIL << "[GEMM2_OTD] CreateMOECompressedOp: expert_type=" << static_cast<int>(config.expert_type)
+                           << " otd_enabled=" << otd_enabled
+                           << " lru_expert_num=" << lru_expert_num
+                           << " num_inputs=" << inputs.size()
+                           << " op=" << op->get_friendly_name() << std::endl;
     std::vector<cldnn::input_info> input_infos;
     for (const auto& input : inputs) {
         input_infos.push_back(cldnn::input_info(input));
@@ -347,8 +354,105 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         OPENVINO_THROW("[GPU] MOECompressed (GEMM3_SWIGLU) reached the GPU backend without being fused: "
                        "FuseMOE3GemmCompressed transformation did not match the routing subgraph for op '",
                        op->get_friendly_name(), "'. Please check the routing pattern.");
+    } else if (otd_enabled) {
+        GPU_DEBUG_TRACE_DETAIL << "[GEMM2_OTD] Entering GEMM2+OTD path for " << op->get_friendly_name() << std::endl;
+        // GEMM2+OTD: Route through moe_3gemm_fused_compressed with GEMM2 config.
+        // The large weight/scale/zp tensors are offloaded to disk; bias stays in GPU memory.
+        //
+        // GEMM2 MOECompressed inputs (without has_zp):
+        //   0: hidden_states, 1: topk_weight, 2: topk_idx,
+        //   3: gate_up_w, 4: gate_up_s, 5: bias_up,
+        //   6: down_w, 7: down_s, 8: bias_down
+        //
+        // GEMM2 MOECompressed inputs (with has_zp):
+        //   0: hidden_states, 1: topk_weight, 2: topk_idx,
+        //   3: gate_up_w, 4: gate_up_s, 5: gate_up_zp, 6: bias_up,
+        //   7: down_w, 8: down_s, 9: down_zp, 10: bias_down
+
+        const auto& model = p.get_model();
+        std::string weights_path;
+        {
+            const auto& rt = model->get_rt_info();
+            auto it = rt.find("__weights_path");
+            OPENVINO_ASSERT(it != rt.end(), "Model rt_info is missing '__weights_path' required by OTD");
+            weights_path = it->second.as<std::string>();
+        }
+
+        // --- Resolve input indices based on has_zp ---
+        size_t gate_up_w_idx = 3;
+        size_t gate_up_s_idx = 4;
+        size_t gate_up_z_idx = config.has_zp ? 5 : 0;  // 0 = unused sentinel
+        size_t bias_up_idx   = config.has_zp ? 6 : 5;
+        size_t down_w_idx    = config.has_zp ? 7 : 6;
+        size_t down_s_idx    = config.has_zp ? 8 : 7;
+        size_t down_z_idx    = config.has_zp ? 9 : 0;   // 0 = unused sentinel
+        size_t bias_down_idx = config.has_zp ? 10 : 8;
+
+        // --- Resolve weight offsets from .bin file ---
+        // Use the same offset resolution logic as GEMM3 OTD path.
+        // We reuse the get_const_offset lambda defined in CreateMOE3GemmFusedCompressedOp.
+        auto get_const_offset_gemm2 = [&](size_t index) -> size_t {
+            auto node = op->input_value(index).get_node_shared_ptr();
+            auto const_op = std::dynamic_pointer_cast<ov::op::v0::Constant>(node);
+            OPENVINO_ASSERT(const_op != nullptr, "Expected constant input for GEMM2 OTD at index ", index);
+            const auto& rt_info = const_op->get_rt_info();
+            auto attr_it = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
+            if (attr_it != rt_info.end()) {
+                return attr_it->second.as<ov::WeightlessCacheAttribute>().bin_offset;
+            }
+            auto source_buf = ov::weight_sharing::Extension::get_constant_source_buffer(*const_op);
+            if (source_buf) {
+                return ov::weight_sharing::Extension::get_constant_id(*const_op);
+            }
+            OPENVINO_THROW("Unable to resolve weight offset for GEMM2 OTD input (index=", index,
+                           ", name=", const_op->get_friendly_name(), ")");
+        };
+
+        // 6 offsets: gate_up_w, down_w, gate_up_s, down_s, gate_up_z, down_z
+        std::vector<size_t> weight_bin_offsets(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count_gemm2, 0);
+        weight_bin_offsets[0] = get_const_offset_gemm2(gate_up_w_idx);
+        weight_bin_offsets[1] = get_const_offset_gemm2(down_w_idx);
+        weight_bin_offsets[2] = get_const_offset_gemm2(gate_up_s_idx);
+        weight_bin_offsets[3] = get_const_offset_gemm2(down_s_idx);
+        if (config.has_zp) {
+            weight_bin_offsets[4] = get_const_offset_gemm2(gate_up_z_idx);
+            weight_bin_offsets[5] = get_const_offset_gemm2(down_z_idx);
+        }
+
+        // --- Build primitive input list matching gemm2_input_index ---
+        // hidden_states, topk_weights, topk_indices,
+        // gate_up_w, gate_up_s, gate_up_zp, down_w, down_s, down_zp,
+        // bias_up, bias_down
+        std::vector<cldnn::input_info> fused_inputs;
+        fused_inputs.push_back(input_infos[0]);  // hidden_states
+        fused_inputs.push_back(input_infos[1]);  // topk_weights
+        fused_inputs.push_back(input_infos[2]);  // topk_indices
+        fused_inputs.push_back(input_infos[gate_up_w_idx]);
+        fused_inputs.push_back(input_infos[gate_up_s_idx]);
+        if (config.has_zp) {
+            fused_inputs.push_back(input_infos[gate_up_z_idx]);
+        } else {
+            fused_inputs.push_back(input_infos[gate_up_s_idx]);  // dummy zp (reuse scale, won't be read)
+        }
+        fused_inputs.push_back(input_infos[down_w_idx]);
+        fused_inputs.push_back(input_infos[down_s_idx]);
+        if (config.has_zp) {
+            fused_inputs.push_back(input_infos[down_z_idx]);
+        } else {
+            fused_inputs.push_back(input_infos[down_s_idx]);  // dummy zp
+        }
+        fused_inputs.push_back(input_infos[bias_up_idx]);
+        fused_inputs.push_back(input_infos[bias_down_idx]);
+
+        // --- Create the fused primitive ---
+        // Config already has expert_type=GEMM2_BIAS_SWIGLU_CLAMP, expert_alpha, expert_beta, gate_idx.
+        // Convert MOECompressed::Config to MOE3GemmFusedCompressed::Config
+        // (they share the same base Config type).
+        const std::string layerName = layer_type_name_ID(op);
+        const cldnn::moe_3gemm_fused_compressed moe(layerName, fused_inputs, config, weight_bin_offsets, weights_path, lru_expert_num);
+        p.add_primitive(*op, moe);
     } else {
-        // Create GEMM2_BIAS_SWIGLU_CLAMP specific primitives
+        // Create GEMM2_BIAS_SWIGLU_CLAMP specific primitives (non-OTD path)
         // input0 : input {#tokens, hidden_size}
         // input1 : topk_weight {#tokens, num_experts_per_token}
         // input2 : topk_idx {#tokens, num_experts_per_token}

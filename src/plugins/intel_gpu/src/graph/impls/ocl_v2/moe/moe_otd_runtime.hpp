@@ -262,6 +262,12 @@ inline void maybe_transpose_scale_zp(const cldnn::moe_3gemm_fused_compressed& de
         group_count = ic / group_size;
     }
 
+    // Per-tensor quantization: scale/zp is a single scalar per expert.
+    // Nothing to transpose (shape [experts, 1, 1]).
+    if (group_size == 0 || group_size == std::numeric_limits<size_t>::max()) {
+        return;
+    }
+
     OPENVINO_ASSERT(oc > 0 && group_count > 0, "Invalid dims for OTD transpose: tensor=", tensor_name, ", oc=", oc, ", group_count=", group_count);
 
     const size_t elem_count = oc * group_count;
@@ -337,12 +343,23 @@ inline void fill_weights_memory(cldnn::stream& exec_stream,
     const auto& weights_path = desc._weights_path;
 
     OPENVINO_ASSERT(!weights_path.empty(), "weights path is empty for OTD weight loading");
-    OPENVINO_ASSERT(weight_bin_offsets.size() == cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count, "Unexpected number of MOE weight offsets");
 
-    static const std::array<const char*, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> tensor_names = {
-        {"gate_w", "up_w", "down_w", "gate_s", "up_s", "down_s", "gate_z", "up_z", "down_z"}};
-    const std::array<cldnn::memory_ptr, cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count> tensors_by_offset = {
-        {wei_mem.gate_w, wei_mem.up_w, wei_mem.down_w, wei_mem.gate_s, wei_mem.up_s, wei_mem.down_s, wei_mem.gate_z, wei_mem.up_z, wei_mem.down_z}};
+    const bool is_gemm2 = desc._config.expert_type == ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP;
+    const size_t expected_offsets = is_gemm2
+        ? cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count_gemm2
+        : cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count_gemm3;
+    OPENVINO_ASSERT(weight_bin_offsets.size() == expected_offsets, "Unexpected number of MOE weight offsets: got ",
+                    weight_bin_offsets.size(), ", expected ", expected_offsets);
+
+    // GEMM3 layout: gate_w, up_w, down_w, gate_s, up_s, down_s, gate_z, up_z, down_z (9 offsets)
+    // GEMM2 layout: gate_up_w, down_w, gate_up_s, down_s, gate_up_z, down_z (6 offsets)
+    // For GEMM2: gate_w stores gate_up fused weight; up_w is null.
+    const std::vector<const char*> tensor_names = is_gemm2
+        ? std::vector<const char*>{"gate_up_w", "down_w", "gate_up_s", "down_s", "gate_up_z", "down_z"}
+        : std::vector<const char*>{"gate_w", "up_w", "down_w", "gate_s", "up_s", "down_s", "gate_z", "up_z", "down_z"};
+    const std::vector<cldnn::memory_ptr> tensors_by_offset = is_gemm2
+        ? std::vector<cldnn::memory_ptr>{wei_mem.gate_w, wei_mem.down_w, wei_mem.gate_s, wei_mem.down_s, wei_mem.gate_z, wei_mem.down_z}
+        : std::vector<cldnn::memory_ptr>{wei_mem.gate_w, wei_mem.up_w, wei_mem.down_w, wei_mem.gate_s, wei_mem.up_s, wei_mem.down_s, wei_mem.gate_z, wei_mem.up_z, wei_mem.down_z};
 
     // Helper: compute dst_offset for a given tensor and lru slot (no file validation needed)
     auto compute_dst_offset = [&](cldnn::memory_ptr mem, size_t lru_expert_no) -> size_t {
@@ -391,7 +408,7 @@ inline void fill_weights_memory(cldnn::stream& exec_stream,
         };
 
         auto& weight_reader = get_thread_local_weight_reader(weights_path);
-        for (size_t offset_pos = 0; offset_pos < static_cast<size_t>(cldnn::moe_3gemm_fused_compressed::serialized_weight_offset_count); offset_pos++) {
+        for (size_t offset_pos = 0; offset_pos < expected_offsets; offset_pos++) {
             auto plan =
                 make_tensor_fill_plan(weight_bin_offsets[offset_pos], tensors_by_offset[offset_pos], expert, lru_experts[index], tensor_names[offset_pos]);
             std::vector<uint8_t> payload;

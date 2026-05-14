@@ -80,6 +80,7 @@
 #include "plugin/transformations/clamp_fp16_output.hpp"
 #include "plugin/transformations/convert_convolution.hpp"
 #include "plugin/transformations/convert_fc_to_compressed.hpp"
+#include "plugin/transformations/convert_gathered_moe_to_moe_compressed.hpp"
 #include "plugin/transformations/convert_matmul_to_fc.hpp"
 #include "plugin/transformations/fuse_moe_shared_expert.hpp"
 #include "transformations/common_optimizations/moe_op_fusion.hpp"
@@ -564,6 +565,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                 manager.register_pass<ov::pass::MoeOpFusion>(has_batch_dim);
                 manager.register_pass<ov::intel_gpu::FuseMOESharedExpert>();
                 manager.register_pass<ov::intel_gpu::FuseMOE3GemmCompressed>();
+                manager.register_pass<ov::intel_gpu::ConvertGatheredMoeToMoeCompressed>(has_batch_dim);
             }
         }
         manager.register_pass<ov::pass::GatedDeltaNetFusion>();

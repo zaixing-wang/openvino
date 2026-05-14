@@ -144,8 +144,32 @@ void MOECompressed::validate_and_infer_types() {
         const size_t down_w_idx = m_config.has_zp ? 7 : 6;
         const size_t down_scale_idx = m_config.has_zp ? 8 : 7;
         const size_t down_zp_idx = m_config.has_zp ? 9 : SIZE_MAX;
-        check_weight_K(gate_up_w_idx, m_config.hidden_size, "GEMM2 gate_up");
-        check_weight_K(down_w_idx, m_config.inter_size / 2, "GEMM2 down");
+        // GEMM2 weights may be stored in either [E, ofm, K] (transpose_b=true, from GatherMatmul pipeline)
+        // or [E, K, ofm] (transpose_b=false, from Gather-based models like gpt-oss). Accept both layouts:
+        // for rank-3 weights, check that K appears at either s[1] or s[2].
+        auto check_weight_K_gemm2 = [&](size_t weight_idx, size_t expected_K, const char* name) {
+            if (weight_idx >= get_input_size())
+                return;
+            const auto& s = get_input_partial_shape(weight_idx);
+            OPENVINO_ASSERT(
+                s.is_static() && (s.size() == 3 || s.size() == 4),
+                "MOECompressed ", name,
+                " weight shape must be static rank-3 or rank-4, got ", s);
+            if (s.size() == 3) {
+                const size_t dim1 = static_cast<size_t>(s[1].get_length());
+                const size_t dim2 = static_cast<size_t>(s[2].get_length());
+                OPENVINO_ASSERT(dim1 == expected_K || dim2 == expected_K,
+                    "MOECompressed ", name, " weight at idx=", weight_idx,
+                    " has shape=", s, " but neither dim matches config-derived K=", expected_K);
+            } else {
+                const size_t actual_K = static_cast<size_t>(s[2].get_length()) * static_cast<size_t>(s[3].get_length());
+                OPENVINO_ASSERT(actual_K == expected_K,
+                    "MOECompressed ", name, " weight at idx=", weight_idx,
+                    " has K=", actual_K, " (shape=", s, ") but config-derived K=", expected_K);
+            }
+        };
+        check_weight_K_gemm2(gate_up_w_idx, m_config.hidden_size, "GEMM2 gate_up");
+        check_weight_K_gemm2(down_w_idx, m_config.inter_size / 2, "GEMM2 down");
         check_scale(gate_up_scale_idx, m_config.hidden_size, "GEMM2 gate_up");
         check_scale(down_scale_idx, m_config.inter_size / 2, "GEMM2 down");
         check_zp(gate_up_zp_idx, "GEMM2 gate_up");

@@ -24,6 +24,9 @@ struct moe_weights {
     cldnn::memory::ptr down_w = nullptr;
     cldnn::memory::ptr down_s = nullptr;
     cldnn::memory::ptr down_z = nullptr;
+    // GEMM2 bias (small, not offloaded)
+    cldnn::memory::ptr bias_up = nullptr;
+    cldnn::memory::ptr bias_down = nullptr;
 };
 
 /// @brief moe compressed primitive
@@ -31,8 +34,12 @@ struct moe_weights {
 struct moe_3gemm_fused_compressed : public primitive_base<moe_3gemm_fused_compressed> {
     CLDNN_DECLARE_PRIMITIVE(moe_3gemm_fused_compressed)
 
-    static constexpr size_t serialized_weight_offset_count = 9;
+    // GEMM3: 9 offsets (gate, up, down × weight, scale, zp)
+    // GEMM2: 6 offsets (gate_up, down × weight, scale, zp)
+    static constexpr size_t serialized_weight_offset_count_gemm3 = 9;
+    static constexpr size_t serialized_weight_offset_count_gemm2 = 6;
 
+    // GEMM3 input indices (routing is raw logits → softmax+topk inside)
     enum class input_index : size_t {
         hidden_states = 0,
         routing_weights,
@@ -48,6 +55,23 @@ struct moe_3gemm_fused_compressed : public primitive_base<moe_3gemm_fused_compre
         count
     };
     static constexpr size_t input_count = static_cast<size_t>(input_index::count);
+
+    // GEMM2 input indices (routing is pre-computed topk)
+    enum class gemm2_input_index : size_t {
+        hidden_states = 0,
+        topk_weights,
+        topk_indices,
+        gate_up_weight,
+        gate_up_scale,
+        gate_up_zp,
+        down_weight,
+        down_scale,
+        down_zp,
+        bias_up,
+        bias_down,
+        count
+    };
+    static constexpr size_t gemm2_input_count = static_cast<size_t>(gemm2_input_index::count);
 
     moe_3gemm_fused_compressed() : primitive_base("", {}) {}
 

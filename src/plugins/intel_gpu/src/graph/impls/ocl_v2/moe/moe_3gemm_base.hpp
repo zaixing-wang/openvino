@@ -62,6 +62,21 @@ enum class MOE3GemmInputIndex : uint8_t {
     SHARED_GATE_GATE_WEIGHT = 22
 };
 
+// GEMM2 input indices (pre-computed routing, gate+up fused weight, bias)
+enum class GEMM2InputIndex : uint8_t {
+    HIDDEN_STATES = 0,
+    TOPK_WEIGHTS = 1,
+    TOPK_INDICES = 2,
+    GATE_UP_WEIGHT = 3,
+    GATE_UP_SCALE = 4,
+    GATE_UP_ZP = 5,
+    DOWN_WEIGHT = 6,
+    DOWN_SCALE = 7,
+    DOWN_ZP = 8,
+    BIAS_UP = 9,
+    BIAS_DOWN = 10,
+};
+
 struct moe_3gemm_config {
     int32_t weight_group_size = -1;
     bool has_batch_dim = false;  // 0 - pa, 1 - non-pa
