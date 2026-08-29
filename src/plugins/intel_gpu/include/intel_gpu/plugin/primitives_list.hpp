@@ -319,6 +319,7 @@ REGISTER_FACTORY(internal, PA_KV_Reorder);
 REGISTER_FACTORY(internal, PagedGatedDeltaNet);
 REGISTER_FACTORY(internal, LoraSubgraph);
 REGISTER_FACTORY(internal, LoraSubgraphFused);
+REGISTER_FACTORY(internal, MSDA);
 REGISTER_FACTORY(internal, VLSDPA);
 REGISTER_FACTORY(internal, MOECompressed);
 REGISTER_FACTORY(internal, MoERouterFused);
