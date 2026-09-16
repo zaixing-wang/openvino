@@ -27,6 +27,11 @@ struct Options {
     bool allow_xattention;
     bool allow_adaptive_rkv;
     bool allow_qq_bias;
+    // See new_plan.md Phase 5: emits a per-layer `chunk_base_ptrs.N` input and `blocks_per_chunk` rt_info
+    // on the resulting PagedAttentionExtension node, enabling the GPU plugin's chunked KV cache
+    // addressing. `kv_cache_blocks_per_chunk` is only meaningful when this is true.
+    bool allow_chunked_kv_cache = false;
+    size_t kv_cache_blocks_per_chunk = 512;
 };
 
 template <typename NodeT, typename VectorT>
@@ -162,7 +167,9 @@ public:
                                   bool allow_cache_rotation = false,
                                   bool allow_xattention = false,
                                   bool allow_adaptive_rkv = false,
-                                  bool allow_qq_bias = false);
+                                  bool allow_qq_bias = false,
+                                  bool allow_chunked_kv_cache = false,
+                                  size_t kv_cache_blocks_per_chunk = 512);
     bool run_on_model(const std::shared_ptr<ov::Model>& model) override;
 
 private:
